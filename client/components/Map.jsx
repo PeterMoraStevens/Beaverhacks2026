@@ -67,7 +67,7 @@ export default function MapView() {
       fitBoundsOptions: { maxZoom: 15 }
     });
     
-    map.current.addControl(geolocate);
+    map.current.addControl(geolocate, 'bottom-left');
 
     map.current.doubleClickZoom.disable();
 
