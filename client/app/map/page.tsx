@@ -1,11 +1,9 @@
-import React from 'react'
+import Map from '../../components/Map'
 
-const page = () => {
+export default function MapPage() {
   return (
-    <div>
-      
-    </div>
+    <main style={{ width: '100vw', height: '100vh' }}>
+      <Map />
+    </main>
   )
 }
-
-export default page
