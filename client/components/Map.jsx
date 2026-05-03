@@ -104,6 +104,62 @@ function camerasToGeoJSON(cameras) {
   };
 }
 
+// ── Valhalla routing helpers ──────────────────────────────────────────────────
+
+function decodePolyline6(encoded) {
+  const coords = [];
+  let idx = 0,
+    lat = 0,
+    lng = 0;
+  while (idx < encoded.length) {
+    let b,
+      shift = 0,
+      result = 0;
+    do {
+      b = encoded.charCodeAt(idx++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.charCodeAt(idx++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coords.push([lng / 1e6, lat / 1e6]); // [lon, lat] for Mapbox
+  }
+  return coords;
+}
+
+function generateExcludePolygons(cameras, radiusMeters) {
+  const radiusKm = Math.max(radiusMeters, 10) / 1000;
+  return cameras.slice(0, 50).map(
+    (cam) =>
+      turf.circle([cam.lon, cam.lat], radiusKm, {
+        steps: 4,
+        units: "kilometers",
+      }).geometry.coordinates[0],
+  );
+}
+
+async function fetchValhallaRoute(locations, costing, excludePolygons = []) {
+  const body = { locations, costing };
+  if (excludePolygons.length > 0) body.exclude_polygons = excludePolygons;
+  const res = await fetch("https://valhalla1.openstreetmap.de/route", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? `Valhalla ${res.status}`);
+  }
+  return res.json();
+}
+
 function computeRouteAnalysis(coords, cameras) {
   const THRESHOLD = 50;
   const segLengths = coords
@@ -172,8 +228,10 @@ function MiniRouteMap({ coords, analysisData }) {
     ctx.clearRect(0, 0, W, H);
     const lngs = coords.map((c) => c[0]);
     const lats = coords.map((c) => c[1]);
-    const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs),
+      maxLng = Math.max(...lngs);
+    const minLat = Math.min(...lats),
+      maxLat = Math.max(...lats);
     const pad = 20;
     const toX = (lng) =>
       pad + ((lng - minLng) / (maxLng - minLng || 1)) * (W - pad * 2);
@@ -238,8 +296,9 @@ export default function MapView() {
   const addPointRef = useRef(null);
   const insertPointRef = useRef(null);
   const analysisActiveRef = useRef(false);
-  const allRoutesRef = useRef([]);
   const allCamerasRef = useRef([]);
+  const primaryRouteRef = useRef(null); // { coords, duration, distance }
+  const allRoutesRef = useRef([]);
 
   const [points, setPoints] = useState([]);
   const [cameras, setCameras] = useState([]);
@@ -257,6 +316,7 @@ export default function MapView() {
   const [mode, setMode] = useState("draw"); // 'draw' | 'route'
   const [profile, setProfile] = useState("walking"); // 'walking' | 'driving'
   const [statsVisible, setStatsVisible] = useState(true);
+  const [showCameras, setShowCameras] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [tripHistory, setTripHistory] = useState(() => {
     if (typeof window === "undefined") return [];
@@ -269,9 +329,27 @@ export default function MapView() {
 
   // Animate panel in after showResults is set
   useEffect(() => {
-    const t = setTimeout(() => setPanelVisible(showResults), showResults ? 30 : 0);
+    const t = setTimeout(
+      () => setPanelVisible(showResults),
+      showResults ? 30 : 0,
+    );
     return () => clearTimeout(t);
   }, [showResults]);
+
+  // Toggle camera heatmap layer visibility
+  useEffect(() => {
+    if (!map.current) return;
+    const visibility = showCameras ? "visible" : "none";
+    const layers = [
+      "camera-clusters",
+      "camera-cluster-count",
+      "camera-unclustered",
+    ];
+    layers.forEach((id) => {
+      if (map.current.getLayer(id))
+        map.current.setLayoutProperty(id, "visibility", visibility);
+    });
+  }, [showCameras]);
 
   // ── Map init ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -309,8 +387,13 @@ export default function MapView() {
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
           "line-gradient": [
-            "interpolate", ["linear"], ["line-progress"],
-            0, "#E63946", 1, "#E63946",
+            "interpolate",
+            ["linear"],
+            ["line-progress"],
+            0,
+            "#E63946",
+            1,
+            "#E63946",
           ],
           "line-width": 5,
           "line-opacity": 0.95,
@@ -353,10 +436,15 @@ export default function MapView() {
         filter: ["has", "point_count"],
         paint: {
           "circle-color": [
-            "step", ["get", "point_count"],
-            "#FFB703", 10, "#FB8500", 50, "#E63946",
+            "step",
+            ["get", "point_count"],
+            "#FFB703",
+            10,
+            "#FB8500",
+            50,
+            "#E63946",
           ],
-          "circle-radius": ["step", ["get", "point_count"], 18, 10, 24, 50, 32],
+          "circle-radius": ["step", ["get", "point_count"], 24, 10, 32, 50, 42],
           "circle-stroke-width": 2,
           "circle-stroke-color": "#fff",
           "circle-opacity": 0.92,
@@ -446,25 +534,38 @@ export default function MapView() {
           const { cameras: fetched } = await res.json();
           if (map.current.getSource("cameras"))
             map.current.getSource("cameras").setData(camerasToGeoJSON(fetched));
-        } catch { /* silently ignore */ }
+        } catch {
+          /* silently ignore */
+        }
       };
       map.current.on("moveend", loadViewportCameras);
       loadViewportCameras();
 
-      // Route line click → insert waypoint
       map.current.on("click", "route-line", (e) => {
         e.preventDefault();
         markerClickedRef.current = true;
         const coord = [e.lngLat.lng, e.lngLat.lat];
         const coords = pointsRef.current;
-        let closestSegment = 0, closestDist = Infinity;
+        let closestSegment = 0,
+          closestDist = Infinity;
         for (let i = 0; i < coords.length - 1; i++) {
-          const [x1, y1] = coords[i], [x2, y2] = coords[i + 1], [cx, cy] = coord;
-          const dx = x2 - x1, dy = y2 - y1;
+          const [x1, y1] = coords[i],
+            [x2, y2] = coords[i + 1],
+            [cx, cy] = coord;
+          const dx = x2 - x1,
+            dy = y2 - y1;
           const lenSq = dx * dx + dy * dy;
-          const t = Math.max(0, Math.min(1, ((cx - x1) * dx + (cy - y1) * dy) / lenSq));
-          const dist = Math.sqrt((cx - x1 - t * dx) ** 2 + (cy - y1 - t * dy) ** 2);
-          if (dist < closestDist) { closestDist = dist; closestSegment = i; }
+          const t = Math.max(
+            0,
+            Math.min(1, ((cx - x1) * dx + (cy - y1) * dy) / lenSq),
+          );
+          const dist = Math.sqrt(
+            (cx - x1 - t * dx) ** 2 + (cy - y1 - t * dy) ** 2,
+          );
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestSegment = i;
+          }
         }
         insertPointRef.current?.(coord, closestSegment + 1);
       });
@@ -474,9 +575,11 @@ export default function MapView() {
       map.current.on("mouseleave", "route-line", () => {
         map.current.getCanvas().style.cursor = "";
       });
-
       map.current.on("click", (e) => {
-        if (markerClickedRef.current) { markerClickedRef.current = false; return; }
+        if (markerClickedRef.current) {
+          markerClickedRef.current = false;
+          return;
+        }
         addPointRef.current?.([e.lngLat.lng, e.lngLat.lat]);
       });
     });
@@ -495,7 +598,13 @@ export default function MapView() {
   const resetRouteColor = () => {
     if (!map.current?.getLayer("route-line")) return;
     map.current.setPaintProperty("route-line", "line-gradient", [
-      "interpolate", ["linear"], ["line-progress"], 0, "#E63946", 1, "#E63946",
+      "interpolate",
+      ["linear"],
+      ["line-progress"],
+      0,
+      "#E63946",
+      1,
+      "#E63946",
     ]);
   };
 
@@ -518,17 +627,28 @@ export default function MapView() {
       geometry: { type: "LineString", coordinates: [coords[0], coords[0]] },
     });
     map.current.setPaintProperty("route-line", "line-gradient", [
-      "interpolate", ["linear"], ["line-progress"], 0, "#E63946", 1, "#E63946",
+      "interpolate",
+      ["linear"],
+      ["line-progress"],
+      0,
+      "#E63946",
+      1,
+      "#E63946",
     ]);
     const frame = (now) => {
       const t = Math.min((now - start) / DURATION, 1);
       const eased = 1 - Math.pow(1 - t, 3);
       try {
         const sliced = turf.lineSliceAlong(
-          line, 0, Math.max(eased * totalLengthKm, 0.0001), { units: "kilometers" },
+          line,
+          0,
+          Math.max(eased * totalLengthKm, 0.0001),
+          { units: "kilometers" },
         );
         map.current.getSource("route").setData(sliced);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       if (t < 1) {
         requestAnimationFrame(frame);
       } else {
@@ -538,7 +658,10 @@ export default function MapView() {
         });
         if (gradientStops.length >= 2) {
           map.current.setPaintProperty("route-line", "line-gradient", [
-            "interpolate", ["linear"], ["line-progress"], ...gradientStops,
+            "interpolate",
+            ["linear"],
+            ["line-progress"],
+            ...gradientStops,
           ]);
         }
         setAnimating(false);
@@ -548,40 +671,13 @@ export default function MapView() {
     requestAnimationFrame(frame);
   };
 
-  const applyAvoidanceRadius = (routes, allCams, radius) => {
-    const scored = routes.map((r) => ({
-      ...r,
-      cameraCount: scoreRouteByCameras(r.geometry.coordinates, allCams, radius),
-    }));
-    let safestIdx = 0;
-    for (let i = 1; i < scored.length; i++) {
-      if (scored[i].cameraCount < scored[safestIdx].cameraCount) safestIdx = i;
-    }
-    const original = scored[0], safest = scored[safestIdx];
-    const primaryCameras = allCams.filter((c) =>
-      isCameraNearPath(c.lat, c.lon, original.geometry.coordinates, radius),
-    );
-    setCameras(primaryCameras);
-    if (safestIdx !== 0) updateSafeRouteLayer(safest.geometry.coordinates);
-    else updateSafeRouteLayer([]);
-    setRouteStats({
-      original: {
-        time: original.duration,
-        distance: original.distance,
-        cameras: original.cameraCount,
-      },
-      safe:
-        safestIdx !== 0
-          ? { time: safest.duration, distance: safest.distance, cameras: safest.cameraCount }
-          : null,
-    });
-  };
-
   // ── Marker helpers ───────────────────────────────────────────────────────────
 
   const setActiveEndpoint = (id) => {
     if (activeEndpointRef.current) {
-      const prev = markersRef.current.find((m) => m._id === activeEndpointRef.current);
+      const prev = markersRef.current.find(
+        (m) => m._id === activeEndpointRef.current,
+      );
       if (prev) prev._el.style.border = "2.5px solid white";
     }
     if (id) {
@@ -660,25 +756,35 @@ export default function MapView() {
 
   const createPopupContent = (onDelete, onSetEndpoint, onPrepend) => {
     const wrapper = document.createElement("div");
-    wrapper.style.cssText = "display:flex;flex-direction:column;gap:6px;padding:2px;";
+    wrapper.style.cssText =
+      "display:flex;flex-direction:column;gap:6px;padding:2px;";
     if (onPrepend) {
       const btn = document.createElement("button");
-      btn.innerText = "⬆️ Add point before this";
+      btn.innerText = "Add point before this";
       btn.style.cssText =
         "background:#9C27B0;color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;width:100%;";
-      btn.addEventListener("click", (e) => { e.stopPropagation(); onPrepend(); });
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onPrepend();
+      });
       wrapper.appendChild(btn);
     }
     const extendBtn = document.createElement("button");
-    extendBtn.innerText = "📍 Extend from here";
+    extendBtn.innerText = "Extend from here";
     extendBtn.style.cssText =
       "background:#2196F3;color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;width:100%;";
-    extendBtn.addEventListener("click", (e) => { e.stopPropagation(); onSetEndpoint(); });
+    extendBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onSetEndpoint();
+    });
     const deleteBtn = document.createElement("button");
     deleteBtn.innerText = "Remove point";
     deleteBtn.style.cssText =
       "background:#E63946;color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;width:100%;";
-    deleteBtn.addEventListener("click", (e) => { e.stopPropagation(); onDelete(); });
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onDelete();
+    });
     wrapper.appendChild(extendBtn);
     wrapper.appendChild(deleteBtn);
     return wrapper;
@@ -716,9 +822,20 @@ export default function MapView() {
       const isFirst = markersRef.current[0]?._id === id;
       popup.setDOMContent(
         createPopupContent(
-          () => { popup.remove(); deletePoint(id); },
-          () => { popup.remove(); setActiveEndpoint(id); },
-          isFirst ? () => { popup.remove(); setPrependMode(id); } : null,
+          () => {
+            popup.remove();
+            deletePoint(id);
+          },
+          () => {
+            popup.remove();
+            setActiveEndpoint(id);
+          },
+          isFirst
+            ? () => {
+                popup.remove();
+                setPrependMode(id);
+              }
+            : null,
         ),
       );
     };
@@ -746,7 +863,6 @@ export default function MapView() {
   }
 
   function addPoint(coord) {
-    // A→B Route mode: only 2 endpoints allowed
     if (mode === "route") {
       if (pointsRef.current.length >= 2) return;
       const label = pointsRef.current.length === 0 ? "A" : "B";
@@ -757,7 +873,6 @@ export default function MapView() {
       setActiveEndpoint(id);
       return;
     }
-
     const { marker, id } = createMarker(coord);
 
     if (prependModeRef.current) {
@@ -797,6 +912,72 @@ export default function MapView() {
 
   // ── Route actions ─────────────────────────────────────────────────────────────
 
+  // Calls /api/optimal_pathing with Valhalla exclude_polygons built from cameras,
+  // then shows the camera-avoiding route in the safe-route layer if it's better.
+  const applyAvoidanceRadius = async (routes, allCams, radius) => {
+    if (!routes?.length || !pointsRef.current.length) {
+      setRouteStats(null);
+      return;
+    }
+
+    const primaryCoords = routes[0].geometry.coordinates;
+    const primaryNearby = allCams.filter((c) =>
+      isCameraNearPath(c.lat, c.lon, primaryCoords, radius),
+    );
+    const originalStats = {
+      time: routes[0].duration,
+      distance: routes[0].distance,
+      cameras: primaryNearby.length,
+    };
+
+    if (primaryNearby.length === 0) {
+      updateSafeRouteLayer([]);
+      setRouteStats({ original: originalStats, safe: null });
+      return;
+    }
+
+    const costing = profile === "walking" ? "pedestrian" : "auto";
+    const waypoints = pointsRef.current.map((p) => ({ lon: p[0], lat: p[1] }));
+
+    // Only exclude cameras that are ON the primary route.
+    // Excluding off-route cameras blocks the alternative roads Valhalla needs for detours,
+    // which causes it to find routes with MORE cameras, not fewer.
+    try {
+      const res = await fetch("/api/optimal_pathing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          waypoints,
+          costing,
+          cameras: primaryNearby,
+          radiusMeters: radius,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`Optimal pathing ${res.status}`);
+      const data = await res.json();
+
+      const safeCoords = decodePolyline6(data.trip.legs[0].shape);
+      const safeDuration = data.trip.summary.time;
+      const safeDistance = data.trip.summary.length * 1000;
+      const safeNearby = allCams.filter((c) =>
+        isCameraNearPath(c.lat, c.lon, safeCoords, radius),
+      );
+      const safeStats = {
+        time: safeDuration,
+        distance: safeDistance,
+        cameras: safeNearby.length,
+      };
+
+      // Always display the Valhalla camera-avoiding route as the blue dashed line.
+      updateSafeRouteLayer(safeCoords);
+      setRouteStats({ original: originalStats, safe: safeStats });
+    } catch {
+      updateSafeRouteLayer([]);
+      setRouteStats({ original: originalStats, safe: null });
+    }
+  };
+
   const clearRoute = () => {
     markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
@@ -821,6 +1002,18 @@ export default function MapView() {
     allCamerasRef.current = [];
     analysisActiveRef.current = false;
     resetRouteColor();
+    const style = map.current?.getStyle();
+    if (style) {
+      style.layers
+        .filter((l) => l.id.startsWith("route-graded-"))
+        .forEach((l) => {
+          map.current.removeLayer(l.id);
+          map.current.removeSource(l.id);
+        });
+    }
+    if (map.current?.getLayer("route-line")) {
+      map.current.setLayoutProperty("route-line", "visibility", "visible");
+    }
   };
 
   const analyzeRoute = async () => {
@@ -829,7 +1022,6 @@ export default function MapView() {
         ? pointsRef.current.length === 2
         : pointsRef.current.length >= 2;
     if (!canAnalyze || analyzing || animating) return;
-
     setAnalyzing(true);
     setRouteStats(null);
     setAnalysisData(null);
@@ -837,59 +1029,54 @@ export default function MapView() {
     updateSafeRouteLayer([]);
     cameraMarkersRef.current.forEach((m) => m.remove());
     cameraMarkersRef.current = [];
-
     const waypoints = pointsRef.current;
-
     try {
-      // 1. Mapbox Directions — get road-snapped route + alternatives
       const coordStr = waypoints.map((p) => p.join(",")).join(";");
       const dirRes = await fetch(
-        `https://api.mapbox.com/directions/v5/mapbox/${profile}/${coordStr}` +
-          `?alternatives=true&geometries=geojson&overview=full&steps=false` +
-          `&access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`,
+        `https://api.mapbox.com/directions/v5/mapbox/${profile}/${coordStr}?alternatives=true&geometries=geojson&overview=full&steps=false&access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`,
       );
       if (!dirRes.ok) throw new Error(`Directions API ${dirRes.status}`);
       const { routes } = await dirRes.json();
       if (!routes?.length) throw new Error("No route returned");
       allRoutesRef.current = routes;
       const primaryCoords = routes[0].geometry.coordinates;
-
-      // 2. Fetch cameras for combined bbox of all alternatives
       const allCoords = routes.flatMap((r) => r.geometry.coordinates);
-      const lats = allCoords.map((p) => p[1]), lons = allCoords.map((p) => p[0]);
+      const lats = allCoords.map((p) => p[1]),
+        lons = allCoords.map((p) => p[0]);
       const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
       const PAD_M = 150;
       const south = Math.min(...lats) - metersToDegLat(PAD_M);
       const north = Math.max(...lats) + metersToDegLat(PAD_M);
       const west = Math.min(...lons) - metersToDegLon(PAD_M, midLat);
       const east = Math.max(...lons) + metersToDegLon(PAD_M, midLat);
-
       const camRes = await fetch(
         `/api/cameras?south=${south}&west=${west}&north=${north}&east=${east}`,
       );
       if (!camRes.ok) throw new Error(`Camera API ${camRes.status}`);
       const { cameras: fetched } = await camRes.json();
       allCamerasRef.current = fetched;
-
-      // 3. Cameras near primary route
       const nearby = fetched.filter((c) =>
         isCameraNearPath(c.lat, c.lon, primaryCoords, safeRadius),
       );
-
-      // 4. Score alternatives for safe route comparison panel
       applyAvoidanceRadius(routes, fetched, safeRadius);
-
-      // 5. Per-segment analysis for visualization
+      setTimeout(() => {
+        applyColorGradedRoute(
+          map.current,
+          routes[0].geometry.coordinates,
+          fetched,
+        );
+      }, 0);
       const analysis = computeRouteAnalysis(primaryCoords, nearby);
       setAnalysisData(analysis);
-
-      // 6. Add camera emoji markers to map
       for (const cam of nearby) {
         const el = document.createElement("div");
         el.style.cssText =
           "width:22px;height:22px;background:#FFB703;border:2px solid #c47c00;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;";
         el.innerHTML = "📷";
-        const popup = new mapboxgl.Popup({ offset: 14, closeButton: false }).setHTML(
+        const popup = new mapboxgl.Popup({
+          offset: 14,
+          closeButton: false,
+        }).setHTML(
           `<div style="font-size:12px;line-height:1.6;"><strong>Surveillance Camera</strong><br/>${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ""}${cam.tags?.["surveillance:type"] ? `Type: ${cam.tags["surveillance:type"]}<br/>` : ""}${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ""}<span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span></div>`,
         );
         const marker = new mapboxgl.Marker({ element: el })
@@ -898,15 +1085,16 @@ export default function MapView() {
           .addTo(map.current);
         cameraMarkersRef.current.push(marker);
       }
-
       setCameras(nearby);
       setAnalyzing(false);
-
-      // 7. Save to trip history
       const scoredTrip = routes.map((r) => ({
         duration: r.duration,
         distance: r.distance,
-        cameraCount: scoreRouteByCameras(r.geometry.coordinates, fetched, safeRadius),
+        cameraCount: scoreRouteByCameras(
+          r.geometry.coordinates,
+          fetched,
+          safeRadius,
+        ),
       }));
       let tripSafeIdx = 0;
       for (let i = 1; i < scoredTrip.length; i++) {
@@ -923,10 +1111,7 @@ export default function MapView() {
         original: scoredTrip[0],
         safe: tripSafeIdx !== 0 ? scoredTrip[tripSafeIdx] : null,
       });
-
       setRouteCoords(primaryCoords);
-
-      // 8. Animate route draw with exposure gradient, then show results overlay
       animateRouteDraw(primaryCoords, analysis.gradientStops, () => {
         setTimeout(() => setShowResults(true), 200);
       });
@@ -936,19 +1121,19 @@ export default function MapView() {
     }
   };
 
-  // Re-score safe route when slider changes
   useEffect(() => {
     if (allRoutesRef.current.length > 0)
-      applyAvoidanceRadius(allRoutesRef.current, allCamerasRef.current, safeRadius);
+      applyAvoidanceRadius(
+        allRoutesRef.current,
+        allCamerasRef.current,
+        safeRadius,
+      );
   }, [safeRadius]);
 
-  // Keep addPoint / insertPoint refs fresh on every render
   useLayoutEffect(() => {
     addPointRef.current = addPoint;
     insertPointRef.current = insertPoint;
   });
-
-  // ── History helpers ────────────────────────────────────────────────────────────
 
   const saveTripToHistory = (entry) => {
     const prev = (() => {
@@ -993,7 +1178,10 @@ export default function MapView() {
   const handleSearch = async (value) => {
     setSearch(value);
     if (showResults) setShowResults(false);
-    if (value.length < 2) { setSuggestions([]); return; }
+    if (value.length < 2) {
+      setSuggestions([]);
+      return;
+    }
     const res = await fetch(
       `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(value)}.json?types=place&country=us&access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`,
     );
@@ -1009,8 +1197,6 @@ export default function MapView() {
     clearRoute();
   };
 
-  // ── Derived display values ─────────────────────────────────────────────────────
-
   const scoreColor = !analysisData
     ? "#fff"
     : analysisData.score < 30
@@ -1018,17 +1204,133 @@ export default function MapView() {
       : analysisData.score < 60
         ? "#FFD600"
         : "#E63946";
-  const scoreLabel = !analysisData
-    ? ""
-    : analysisData.score < 30
-      ? "Low Risk"
-      : analysisData.score < 60
-        ? "Moderate"
-        : "High Risk";
   const isLoading = analyzing || animating;
-  const canAnalyze = mode === "route" ? points.length === 2 : points.length >= 2;
+  const canAnalyze =
+    mode === "route" ? points.length === 2 : points.length >= 2;
 
-  // ── Render ─────────────────────────────────────────────────────────────────────
+  function densityColor(ratio) {
+    const clamp = Math.max(0, Math.min(1, ratio));
+    if (clamp <= 0.5) return lerpColor("#4CAF50", "#FFB703", clamp * 2);
+    return lerpColor("#FFB703", "#E63946", (clamp - 0.5) * 2);
+  }
+
+  function lerpColor(a, b, t) {
+    const ah = a.replace("#", ""),
+      bh = b.replace("#", "");
+    const ar = parseInt(ah.substring(0, 2), 16),
+      ag = parseInt(ah.substring(2, 4), 16),
+      ab = parseInt(ah.substring(4, 6), 16);
+    const br = parseInt(bh.substring(0, 2), 16),
+      bg = parseInt(bh.substring(2, 4), 16),
+      bb = parseInt(bh.substring(4, 6), 16);
+    return `#${Math.round(ar + (br - ar) * t)
+      .toString(16)
+      .padStart(2, "0")}${Math.round(ag + (bg - ag) * t)
+      .toString(16)
+      .padStart(2, "0")}${Math.round(ab + (bb - ab) * t)
+      .toString(16)
+      .padStart(2, "0")}`;
+  }
+
+  function interpolateRoute(coords, segmentMeters = 20) {
+    const R = 6371000;
+    const result = [];
+    for (let i = 0; i < coords.length - 1; i++) {
+      const [lon1, lat1] = coords[i],
+        [lon2, lat2] = coords[i + 1];
+      const dLat = (lat2 - lat1) * (Math.PI / 180),
+        dLon = (lon2 - lon1) * (Math.PI / 180);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * (Math.PI / 180)) *
+          Math.cos(lat2 * (Math.PI / 180)) *
+          Math.sin(dLon / 2) ** 2;
+      const dist = 2 * R * Math.asin(Math.sqrt(a));
+      const steps = Math.max(1, Math.ceil(dist / segmentMeters));
+      for (let s = 0; s < steps; s++) {
+        result.push([
+          lon1 + (lon2 - lon1) * (s / steps),
+          lat1 + (lat2 - lat1) * (s / steps),
+        ]);
+      }
+    }
+    result.push(coords[coords.length - 1]);
+    return result;
+  }
+
+  function applyColorGradedRoute(
+    mapRef,
+    pathCoords,
+    cameras,
+    thresholdMeters = 50,
+    maxCams = 3,
+  ) {
+    const existingLayers = mapRef.getStyle().layers.map((l) => l.id);
+    existingLayers
+      .filter((id) => id.startsWith("route-graded-"))
+      .forEach((id) => {
+        mapRef.removeLayer(id);
+        mapRef.removeSource(id);
+      });
+    if (pathCoords.length < 2) {
+      if (mapRef.getLayer("route-line"))
+        mapRef.setLayoutProperty("route-line", "visibility", "visible");
+      return;
+    }
+    if (mapRef.getLayer("route-line"))
+      mapRef.setLayoutProperty("route-line", "visibility", "none");
+    const dense = interpolateRoute(pathCoords, 20);
+    const segments = [];
+    for (let i = 0; i < dense.length - 1; i++) {
+      const count = cameras.filter((cam) =>
+        isCameraNearPath(
+          cam.lat,
+          cam.lon,
+          [dense[i], dense[i + 1]],
+          thresholdMeters,
+        ),
+      ).length;
+      segments.push({
+        coords: [dense[i], dense[i + 1]],
+        color: densityColor(Math.min(count / maxCams, 1)),
+      });
+    }
+    const merged = [];
+    let current = { coords: [segments[0].coords[0]], color: segments[0].color };
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].color === current.color) {
+        current.coords.push(segments[i].coords[1]);
+      } else {
+        merged.push(current);
+        current = {
+          coords: [segments[i].coords[0], segments[i].coords[1]],
+          color: segments[i].color,
+        };
+      }
+    }
+    merged.push(current);
+    merged.forEach((run, idx) => {
+      const id = `route-graded-${idx}`;
+      mapRef.addSource(id, {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: run.coords },
+        },
+      });
+      mapRef.addLayer({
+        id,
+        type: "line",
+        source: id,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": run.color,
+          "line-width": 5,
+          "line-opacity": 0.95,
+        },
+      });
+    });
+  }
 
   return (
     <div
@@ -1041,7 +1343,6 @@ export default function MapView() {
     >
       <div ref={mapContainer} style={{ width: "100%", height: "100%" }} />
 
-      {/* Dark overlay during animation + results */}
       <div
         style={{
           position: "absolute",
@@ -1052,17 +1353,21 @@ export default function MapView() {
           opacity: animating || panelVisible ? 1 : 0,
           transition: "opacity 0.4s ease",
         }}
-        onClick={() => { if (!animating) setShowResults(false); }}
+        onClick={() => {
+          if (!animating) setShowResults(false);
+        }}
       />
 
-      {/* ── Top header ──────────────────────────────────────────────────────── */}
+      {/* Top header — logo centered */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
           position: "absolute",
-          top: 0, left: 0, right: 0,
+          top: 0,
+          left: 0,
+          right: 0,
           background: "white",
-          padding: "12px 20px",
+          padding: "16px 24px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -1073,50 +1378,82 @@ export default function MapView() {
           color: "#111",
         }}
       >
-        {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <div style={{ width: 10, height: 10, background: "#E63946", borderRadius: "50%" }} />
-          <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: "-0.3px", color: "#111" }}>
-            SurveillanceTracker
-          </span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 3,
+              background: "#f0f0f0",
+              borderRadius: 8,
+              padding: 3,
+            }}
+          >
+            {[
+              ["draw", "Free Draw"],
+              ["route", "A→B Route"],
+            ].map(([m, label]) => (
+              <button
+                key={m}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  switchMode(m);
+                }}
+                style={{
+                  background: mode === m ? "white" : "transparent",
+                  border: "none",
+                  padding: "8px 16px",
+                  borderRadius: 7,
+                  fontSize: 13,
+                  fontWeight: mode === m ? 700 : 500,
+                  cursor: "pointer",
+                  color: mode === m ? "#111" : "#666",
+                  boxShadow: mode === m ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+                  transition: "all 0.15s",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setHistoryOpen((o) => !o);
+            }}
+            style={{
+              background: historyOpen ? "#1976D2" : "white",
+              border: "1px solid #e0e0e0",
+              padding: "9px 18px",
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              color: historyOpen ? "white" : "#555",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+            }}
+          >
+            History {tripHistory.length > 0 && `(${tripHistory.length})`}
+          </button>
         </div>
 
-        {/* Mode toggle */}
-        <div style={{ display: "flex", gap: 3, background: "#f0f0f0", borderRadius: 8, padding: 3, flexShrink: 0 }}>
-          {[["draw", "✏️ Free Draw"], ["route", "🗺 A→B Route"]].map(([m, label]) => (
-            <button
-              key={m}
-              onClick={(e) => { e.stopPropagation(); switchMode(m); }}
-              style={{
-                background: mode === m ? "white" : "transparent",
-                border: "none",
-                padding: "6px 12px",
-                borderRadius: 6,
-                fontSize: 12,
-                fontWeight: mode === m ? 700 : 500,
-                cursor: "pointer",
-                color: mode === m ? "#111" : "#666",
-                boxShadow: mode === m ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
-                transition: "all 0.15s",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* History button */}
+        {/* Camera heatmap toggle */}
         <button
-          onClick={(e) => { e.stopPropagation(); setHistoryOpen((o) => !o); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowCameras((v) => !v);
+          }}
           style={{
-            background: historyOpen ? "#1976D2" : "white",
+            background: showCameras ? "#FFB703" : "white",
             border: "1px solid #e0e0e0",
             padding: "7px 14px",
             borderRadius: 8,
             fontSize: 12,
             fontWeight: 600,
             cursor: "pointer",
-            color: historyOpen ? "white" : "#555",
+            color: showCameras ? "white" : "#555",
             flexShrink: 0,
             display: "flex",
             alignItems: "center",
@@ -1124,7 +1461,7 @@ export default function MapView() {
             boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
           }}
         >
-          🕐 History {tripHistory.length > 0 && `(${tripHistory.length})`}
+          {showCameras ? "Toggle off " : "Toggle on "} Heatmap
         </button>
 
         {/* Search */}
@@ -1149,15 +1486,15 @@ export default function MapView() {
           {suggestions.length > 0 && (
             <div
               style={{
-                position: "absolute",
-                top: "110%",
-                left: 0,
-                right: 0,
-                background: "white",
-                borderRadius: 8,
-                boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
-                overflow: "hidden",
-                zIndex: 20,
+                width: "100%",
+                padding: "10px 16px",
+                borderRadius: 9,
+                border: "1px solid #ccc",
+                fontSize: 14,
+                outline: "none",
+                boxSizing: "border-box",
+                color: "#111",
+                background: "#f5f5f5",
               }}
             >
               {suggestions.map((s) => (
@@ -1171,8 +1508,12 @@ export default function MapView() {
                     borderBottom: "1px solid #f0f0f0",
                     color: "#111",
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#f9f9f9")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background = "#f9f9f9")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "white")
+                  }
                 >
                   {s.place_name}
                 </div>
@@ -1185,13 +1526,18 @@ export default function MapView() {
         <span
           style={{
             fontSize: 13,
-            color: cameras.length > 0 ? "#c47c00" : activeEndpointId ? "#2196F3" : "#444",
+            color:
+              cameras.length > 0
+                ? "#c47c00"
+                : activeEndpointId
+                  ? "#2196F3"
+                  : "#444",
             fontWeight: cameras.length > 0 || activeEndpointId ? 600 : 400,
             flexShrink: 0,
           }}
         >
           {cameras.length > 0
-            ? `📷 ${cameras.length} camera${cameras.length !== 1 ? "s" : ""} on route`
+            ? `${cameras.length} camera${cameras.length !== 1 ? "s" : ""} on route`
             : isLoading
               ? animating
                 ? "Analyzing your route…"
@@ -1206,14 +1552,14 @@ export default function MapView() {
                   ? "Click map to add points"
                   : activeEndpointId
                     ? prependMode
-                      ? "⬆️ Adding before first point — click map"
-                      : "📍 Extending from selected point — click map"
+                      ? "Adding before first point, click map"
+                      : "Extending from selected point, click map"
                     : `${points.length} point${points.length !== 1 ? "s" : ""} · click pin to select`}
         </span>
       </div>
 
-      {/* Results — floating over map */}
-      {showResults && analysisData && (
+      {/* Results overlay */}
+      {showResults && analysisData && routeStats && (
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
@@ -1227,7 +1573,7 @@ export default function MapView() {
             transition: "all 0.4s cubic-bezier(0.32, 0.72, 0, 1)",
             zIndex: 9,
             width: "90%",
-            maxWidth: 420,
+            maxWidth: 800,
             textAlign: "center",
           }}
         >
@@ -1249,79 +1595,75 @@ export default function MapView() {
               alignItems: "center",
               justifyContent: "center",
               color: "white",
+              zIndex: 10,
             }}
           >
             ×
           </button>
 
-          <div style={{ marginBottom: 16 }}>
-            <MiniRouteMap coords={routeCoords} analysisData={analysisData} />
-          </div>
-
           <div
             style={{
-              display: "inline-block",
-              background: "rgba(0,0,0,0.55)",
-              backdropFilter: "blur(8px)",
-              borderRadius: 20,
-              padding: "12px 32px",
-              marginBottom: 10,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 16,
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "4px",
             }}
           >
             <div
               style={{
-                fontSize: 80,
-                fontWeight: 900,
-                lineHeight: 1,
-                color: scoreColor,
-                letterSpacing: "-4px",
-              }}
-            >
-              {analysisData.score}
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: scoreColor,
-                textTransform: "uppercase",
-                letterSpacing: 3,
-                marginTop: 2,
-              }}
-            >
-              {scoreLabel}
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: "rgba(0,0,0,0.35)",
-              backdropFilter: "blur(12px)",
-              borderRadius: 16,
-              padding: "16px 20px",
-              marginTop: 8,
-            }}
-          >
-            <div
-              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "12px",
                 display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 8,
+                  color: "rgba(255,255,255,0.7)",
+                }}
+              >
+                Route Preview
+              </div>
+              <MiniRouteMap coords={routeCoords} analysisData={analysisData} />
+            </div>
+
+            <div
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "20px",
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
                 justifyContent: "center",
-                gap: 36,
-                marginBottom: 16,
+                gap: "24px",
               }}
             >
               {[
                 { value: analysisData.totalCameras, label: "Cameras" },
                 { value: `${analysisData.routeMiles}`, label: "Miles" },
-                { value: analysisData.worstCount, label: "Worst Block", color: "#E63946" },
+                {
+                  value: analysisData.worstCount,
+                  label: "Worst Block",
+                  color: "#E63946",
+                },
               ].map(({ value, label, color }) => (
                 <div key={label} style={{ textAlign: "center" }}>
                   <div
                     style={{
-                      fontSize: 28,
+                      fontSize: 64,
                       fontWeight: 900,
-                      color: color || "white",
-                      letterSpacing: "-1px",
+                      lineHeight: 1,
+                      color: color || scoreColor,
+                      letterSpacing: "-4px",
                     }}
                   >
                     {value}
@@ -1329,10 +1671,11 @@ export default function MapView() {
                   <div
                     style={{
                       fontSize: 10,
+                      fontWeight: 700,
                       color: "rgba(255,255,255,0.6)",
                       textTransform: "uppercase",
-                      letterSpacing: 1.5,
-                      marginTop: 2,
+                      letterSpacing: 2,
+                      marginTop: 6,
                     }}
                   >
                     {label}
@@ -1341,13 +1684,31 @@ export default function MapView() {
               ))}
             </div>
 
-            <ResponsiveContainer width="100%" height={70}>
-              <AreaChart
-                data={analysisData.graphData}
-                margin={{ top: 4, right: 0, left: -20, bottom: 0 }}
-              >
+            <ResponsiveContainer
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "16px",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 12,
+                  color: "rgba(255,255,255,0.7)",
+                }}
+              />
+              <AreaChart>
                 <defs>
-                  <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient
+                    id="exposureGradient"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
                     <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
                     <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
                   </linearGradient>
@@ -1388,32 +1749,144 @@ export default function MapView() {
 
             <div
               style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "16px",
                 display: "flex",
-                justifyContent: "center",
-                gap: 14,
-                marginTop: 10,
+                flexDirection: "column",
               }}
             >
-              {[
-                ["#00C853", "Low"],
-                ["#FFD600", "Medium"],
-                ["#FF6D00", "High"],
-                ["#E63946", "Severe"],
-              ].map(([color, label]) => (
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 12,
+                  color: "rgba(255,255,255,0.7)",
+                }}
+              >
+                Route Comparison
+              </div>
+              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
                 <div
-                  key={label}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    fontSize: 10,
-                    color: "rgba(255,255,255,0.6)",
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: "rgba(230, 57, 70, 0.2)",
+                    border: "1px solid rgba(230, 57, 70, 0.3)",
                   }}
                 >
-                  <div style={{ width: 14, height: 3, background: color, borderRadius: 2 }} />{" "}
-                  {label}
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "rgba(255,255,255,0.5)",
+                      marginBottom: 4,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Your Route
+                  </div>
+                  <div
+                    style={{ fontSize: 20, fontWeight: 800, color: "#E63946" }}
+                  >
+                    {formatTime(routeStats.original.time)}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "rgba(255,255,255,0.6)",
+                      marginTop: 2,
+                    }}
+                  >
+                    {formatDistance(routeStats.original.distance)}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#c47c00",
+                      marginTop: 4,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {routeStats.original.cameras} camera
+                    {routeStats.original.cameras !== 1 ? "s" : ""}
+                  </div>
                 </div>
-              ))}
+                <div
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: routeStats.safe
+                      ? "rgba(33, 150, 243, 0.2)"
+                      : "rgba(255,255,255,0.1)",
+                    border: `1px solid ${routeStats.safe ? "rgba(33, 150, 243, 0.3)" : "rgba(255,255,255,0.1)"}`,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "rgba(255,255,255,0.5)",
+                      marginBottom: 4,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Optimal Path
+                  </div>
+                  {routeStats.safe ? (
+                    <>
+                      <div
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 800,
+                          color: "#2196F3",
+                        }}
+                      >
+                        {formatTime(routeStats.safe.time)}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "rgba(255,255,255,0.6)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {formatDistance(routeStats.safe.distance)}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color:
+                            routeStats.safe.cameras <
+                            routeStats.original.cameras
+                              ? "#66bb6a"
+                              : "#c47c00",
+                          marginTop: 4,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {routeStats.safe.cameras} camera
+                        {routeStats.safe.cameras !== 1 ? "s" : ""}
+                        {routeStats.safe.cameras <
+                          routeStats.original.cameras && " ✓"}
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "rgba(255,255,255,0.4)",
+                        marginTop: 12,
+                      }}
+                    >
+                      Calculating…
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1448,156 +1921,17 @@ export default function MapView() {
               gap: 6,
             }}
           >
-            📊 Show Results — {routeStats.original.cameras} camera
-            {routeStats.original.cameras !== 1 ? "s" : ""} on route
+            📊 Show Results — {routeStats.original.cameras} cam
+            {routeStats.original.cameras !== 1 ? "s" : ""}
+            {routeStats.safe &&
+            routeStats.safe.cameras < routeStats.original.cameras
+              ? ` → ${routeStats.safe.cameras} optimal`
+              : ""}
           </button>
         </div>
       )}
 
-      {routeStats && statsVisible && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: "absolute",
-            bottom: 90,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "white",
-            borderRadius: 14,
-            padding: "16px 20px",
-            boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
-            zIndex: 10,
-            minWidth: 360,
-            display: "flex",
-            flexDirection: "column",
-            gap: 14,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: -4,
-            }}
-          >
-            <span style={{ fontWeight: 700, fontSize: 13, color: "#333", letterSpacing: "-0.2px" }}>
-              Route Analysis
-            </span>
-            <button
-              onClick={() => setStatsVisible(false)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "#999",
-                fontSize: 16,
-                padding: "0 2px",
-                lineHeight: 1,
-              }}
-            >
-              ✕
-            </button>
-          </div>
-
-          <div style={{ display: "flex", gap: 12 }}>
-            <div
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: "10px 8px",
-                borderRadius: 10,
-                background: "#fff5f5",
-                border: "1px solid #fcc",
-              }}
-            >
-              <div style={{ fontSize: 11, color: "#999", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Your Route
-              </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: "#E63946" }}>
-                {formatTime(routeStats.original.time)}
-              </div>
-              <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                {formatDistance(routeStats.original.distance)}
-              </div>
-              <div style={{ fontSize: 12, color: "#c47c00", marginTop: 4, fontWeight: 600 }}>
-                📷 {routeStats.original.cameras} camera{routeStats.original.cameras !== 1 ? "s" : ""}
-              </div>
-            </div>
-            <div
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: "10px 8px",
-                borderRadius: 10,
-                background: routeStats.safe ? "#f0f7ff" : "#f9f9f9",
-                border: `1px solid ${routeStats.safe ? "#90caf9" : "#eee"}`,
-              }}
-            >
-              <div style={{ fontSize: 11, color: "#999", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Safe Route
-              </div>
-              {routeStats.safe ? (
-                <>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: "#2196F3" }}>
-                    {formatTime(routeStats.safe.time)}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                    {formatDistance(routeStats.safe.distance)}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#388e3c", marginTop: 4, fontWeight: 600 }}>
-                    📷 {routeStats.safe.cameras} camera{routeStats.safe.cameras !== 1 ? "s" : ""}
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: 13, color: "#999", marginTop: 12 }}>
-                  No safer<br />alternative found
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 12,
-                color: "#666",
-                marginBottom: 6,
-              }}
-            >
-              <span>Camera avoidance radius</span>
-              <span style={{ fontWeight: 600, color: "#2196F3" }}>
-                {safeRadius} m ({Math.round(safeRadius * 3.281)} ft)
-              </span>
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={200}
-              step={5}
-              value={safeRadius}
-              onChange={(e) => setSafeRadius(parseInt(e.target.value))}
-              style={{ width: "100%", accentColor: "#2196F3" }}
-            />
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 11,
-                color: "#bbb",
-                marginTop: 2,
-              }}
-            >
-              <span>10 m</span>
-              <span>200 m</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Bottom action bar ──────────────────────────────────────────────────── */}
+      {/* Bottom action bar */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -1611,7 +1945,6 @@ export default function MapView() {
           alignItems: "center",
         }}
       >
-        {/* Walk / Drive toggle */}
         <div
           style={{
             display: "flex",
@@ -1623,16 +1956,22 @@ export default function MapView() {
             boxShadow: "0 2px 12px rgba(0,0,0,0.12)",
           }}
         >
-          {[["walking", "🚶 Walk"], ["driving", "🚗 Drive"]].map(([p, label]) => (
+          {[
+            ["walking", "Walk"],
+            ["driving", "Drive"],
+          ].map(([p, label]) => (
             <button
               key={p}
-              onClick={(e) => { e.stopPropagation(); setProfile(p); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setProfile(p);
+              }}
               style={{
                 background: profile === p ? "#2196F3" : "transparent",
                 border: "none",
-                padding: "9px 14px",
-                borderRadius: 7,
-                fontSize: 12,
+                padding: "11px 18px",
+                borderRadius: 8,
+                fontSize: 13,
                 fontWeight: profile === p ? 700 : 500,
                 cursor: "pointer",
                 color: profile === p ? "white" : "#666",
@@ -1643,13 +1982,15 @@ export default function MapView() {
             </button>
           ))}
         </div>
-
         <button
-          onClick={(e) => { e.stopPropagation(); clearRoute(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            clearRoute();
+          }}
           style={{
             background: "white",
             border: "1px solid #e0e0e0",
-            padding: "12px 20px",
+            padding: "14px 24px",
             borderRadius: 10,
             fontSize: 13,
             fontWeight: 600,
@@ -1661,39 +2002,49 @@ export default function MapView() {
             color: "#111",
           }}
         >
-          🗑️ Clear
+          Clear
         </button>
-
         <button
-          onClick={(e) => { e.stopPropagation(); analyzeRoute(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            analyzeRoute();
+          }}
           disabled={!canAnalyze || isLoading}
           style={{
             background: !canAnalyze || isLoading ? "#ccc" : "#E63946",
             color: "white",
             border: "none",
-            padding: "12px 24px",
+            padding: "14px 28px",
             borderRadius: 10,
             fontSize: 13,
             fontWeight: 700,
             cursor: !canAnalyze || isLoading ? "not-allowed" : "pointer",
             boxShadow:
-              canAnalyze && !isLoading ? "0 2px 12px rgba(230,57,70,0.4)" : "none",
+              canAnalyze && !isLoading
+                ? "0 2px 12px rgba(230,57,70,0.4)"
+                : "none",
             display: "flex",
             alignItems: "center",
             gap: 6,
           }}
         >
-          {analyzing ? "Fetching…" : animating ? "Animating…" : "Analyze Route →"}
+          {analyzing
+            ? "Fetching…"
+            : animating
+              ? "Animating…"
+              : "Analyze Route →"}
         </button>
       </div>
 
-      {/* ── History side panel ─────────────────────────────────────────────────── */}
+      {/* History panel */}
       {historyOpen && (
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
             position: "absolute",
-            top: 61, right: 0, bottom: 0,
+            top: 61,
+            right: 0,
+            bottom: 0,
             width: 320,
             background: "white",
             boxShadow: "-4px 0 24px rgba(0,0,0,0.12)",
@@ -1712,11 +2063,16 @@ export default function MapView() {
               flexShrink: 0,
             }}
           >
-            <span style={{ fontWeight: 700, fontSize: 14, color: "#111" }}>Trip History</span>
+            <span style={{ fontWeight: 700, fontSize: 14, color: "#111" }}>
+              Trip History
+            </span>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {tripHistory.length > 0 && (
                 <button
-                  onClick={() => { localStorage.removeItem("trip_history"); setTripHistory([]); }}
+                  onClick={() => {
+                    localStorage.removeItem("trip_history");
+                    setTripHistory([]);
+                  }}
                   style={{
                     background: "none",
                     border: "none",
@@ -1745,7 +2101,6 @@ export default function MapView() {
               </button>
             </div>
           </div>
-
           <div style={{ overflowY: "auto", flex: 1, padding: "8px 0" }}>
             {tripHistory.length === 0 ? (
               <div
@@ -1757,7 +2112,9 @@ export default function MapView() {
                   lineHeight: 1.7,
                 }}
               >
-                No trips yet.<br />Analyze a route to save it here.
+                No trips yet.
+                <br />
+                Analyze a route to save it here.
               </div>
             ) : (
               tripHistory.map((trip) => (
@@ -1793,7 +2150,7 @@ export default function MapView() {
                           fontWeight: 600,
                         }}
                       >
-                        {trip.profile === "driving" ? "🚗" : "🚶"} {trip.profile}
+                        {trip.profile}
                       </span>
                       <span
                         style={{
@@ -1809,7 +2166,13 @@ export default function MapView() {
                       </span>
                     </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 6,
+                    }}
+                  >
                     <div
                       style={{
                         background: "#fff5f5",
@@ -1819,17 +2182,37 @@ export default function MapView() {
                         border: "1px solid #fcc",
                       }}
                     >
-                      <div style={{ fontSize: 10, color: "#999", marginBottom: 2, textTransform: "uppercase" }}>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: "#999",
+                          marginBottom: 2,
+                          textTransform: "uppercase",
+                        }}
+                      >
                         Your Route
                       </div>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: "#E63946" }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 15,
+                          color: "#E63946",
+                        }}
+                      >
                         {formatTime(trip.original.duration)}
                       </div>
                       <div style={{ fontSize: 11, color: "#888" }}>
                         {formatDistance(trip.original.distance)}
                       </div>
-                      <div style={{ fontSize: 11, color: "#c47c00", fontWeight: 600, marginTop: 2 }}>
-                        📷 {trip.original.cameraCount}
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#c47c00",
+                          fontWeight: 600,
+                          marginTop: 2,
+                        }}
+                      >
+                        {trip.original.cameraCount} Cameras
                       </div>
                     </div>
                     <div
@@ -1841,24 +2224,48 @@ export default function MapView() {
                         border: `1px solid ${trip.safe ? "#90caf9" : "#eee"}`,
                       }}
                     >
-                      <div style={{ fontSize: 10, color: "#999", marginBottom: 2, textTransform: "uppercase" }}>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: "#999",
+                          marginBottom: 2,
+                          textTransform: "uppercase",
+                        }}
+                      >
                         Safe Route
                       </div>
                       {trip.safe ? (
                         <>
-                          <div style={{ fontWeight: 700, fontSize: 15, color: "#2196F3" }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              fontSize: 15,
+                              color: "#2196F3",
+                            }}
+                          >
                             {formatTime(trip.safe.duration)}
                           </div>
                           <div style={{ fontSize: 11, color: "#888" }}>
                             {formatDistance(trip.safe.distance)}
                           </div>
-                          <div style={{ fontSize: 11, color: "#388e3c", fontWeight: 600, marginTop: 2 }}>
-                            📷 {trip.safe.cameraCount}
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "#388e3c",
+                              fontWeight: 600,
+                              marginTop: 2,
+                            }}
+                          >
+                            {trip.safe.cameraCount} Cameras
                           </div>
                         </>
                       ) : (
-                        <div style={{ fontSize: 11, color: "#bbb", marginTop: 10 }}>
-                          No safer<br />alternative
+                        <div
+                          style={{ fontSize: 11, color: "#bbb", marginTop: 10 }}
+                        >
+                          No safer
+                          <br />
+                          alternative
                         </div>
                       )}
                     </div>
@@ -1867,7 +2274,11 @@ export default function MapView() {
                     onClick={() => {
                       if (trip.waypoints?.length > 0) {
                         const [lon, lat] = trip.waypoints[0];
-                        map.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 1200 });
+                        map.current?.flyTo({
+                          center: [lon, lat],
+                          zoom: 14,
+                          duration: 1200,
+                        });
                       }
                     }}
                     style={{
@@ -1882,7 +2293,7 @@ export default function MapView() {
                       cursor: "pointer",
                     }}
                   >
-                    📍 Fly to start
+                    Fly to start
                   </button>
                 </div>
               ))
