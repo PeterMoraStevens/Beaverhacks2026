@@ -1698,7 +1698,7 @@ export default function MapView() {
             boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
           }}
         >
-          ⭐ Saved {savedRoutes.length > 0 && `(${savedRoutes.length})`}
+          Saved {savedRoutes.length > 0 && `(${savedRoutes.length})`}
         </button>
 
 
@@ -2522,7 +2522,7 @@ export default function MapView() {
             gap: 6,
           }}
         >
-          ⭐ Save Route
+          Save Route
         </button>
 
       </div>
@@ -2660,6 +2660,7 @@ export default function MapView() {
                     {/* Star button */}
                     <button
                       onClick={() => starTripFromHistory(trip)}
+                      
                       title={isTripStarred(trip) ? 'Remove from saved' : 'Save this route'}
                       style={{
                         background: isTripStarred(trip) ? '#fff8e7' : 'none',
@@ -2669,7 +2670,7 @@ export default function MapView() {
                         transition: 'all 0.15s',
                       }}
                     >
-                      ⭐
+                      {isTripStarred(trip) ? '★' : '☆'}
                     </button>
                     
                   </div>
@@ -2851,7 +2852,7 @@ export default function MapView() {
           <div style={{ overflowY: "auto", flex: 1, padding: "8px 0" }}>
             {savedRoutes.length === 0 ? (
               <div style={{ color: "#bbb", fontSize: 13, textAlign: "center", marginTop: 48, lineHeight: 1.7 }}>
-                No saved routes yet.<br />Click ⭐ Save Route to save one.
+                No saved routes yet.<br />Click ★ Save Route to save one.
               </div>
             ) : (
               savedRoutes.map((route) => (
@@ -2885,11 +2886,11 @@ export default function MapView() {
                           if (newName?.trim()) renameRoute(route.id, newName.trim());
                         }}
                         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px", color: "#aaa" }}
-                      >✏️</button>
+                      >✎</button>
                       <button
                         onClick={() => deleteSavedRoute(route.id)}
                         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px", color: "#E63946" }}
-                      >🗑️</button>
+                      >×</button>
                     </div>
                   </div>
 
