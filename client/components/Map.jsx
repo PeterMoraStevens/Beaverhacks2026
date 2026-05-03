@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { clearCamerasFromStorage } from '@/lib/cameras';
+import { samplePoints, fetchCamerasNearPoint } from '@/lib/geoanalysis';
+
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
@@ -351,33 +353,19 @@ export default function MapView() {
     setAnalyzing(true);
     cameraMarkersRef.current.forEach(m => m.remove());
     cameraMarkersRef.current = [];
+    
 
-    const coords = pointsRef.current;
-    const lons = coords.map(p => p[0]);
-    const lats = coords.map(p => p[1]);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-    const midLat = (minLat + maxLat) / 2;
-    const PAD_M = 7.62;
-    const south = minLat - metersToDegLat(PAD_M);
-    const north = maxLat + metersToDegLat(PAD_M);
-    const west  = minLon - metersToDegLon(PAD_M, midLat);
-    const east  = maxLon + metersToDegLon(PAD_M, midLat);
+    const coords = samplePoints(pointsRef.current); // [[lon, lat], ...]
+    const allCameras = new globalThis.Map();
 
     try {
-      const res = await fetch(`/api/cameras?south=${south}&west=${west}&north=${north}&east=${east}`);
-      if (!res.ok) throw new Error(`API error ${res.status}`);
-      const { cameras: allCameras } = await res.json();
+      for (const c of coords) {
+        const cameras = await fetchCamerasNearPoint(c[0], c[1]); //Cameras[]
+        for (const cam of cameras) allCameras.set(cam.id, { ...cam, queriedAt: new Date().toISOString() });
+      }
 
-      const WATCH_RADIUS_M = 50;
-      const nearby = allCameras.filter(cam => isCameraNearPath(cam.lat, cam.lon, coords, WATCH_RADIUS_M));
-
-      const existing = JSON.parse(localStorage.getItem('surveillance_cameras') || '[]');
-      const byId = new globalThis.Map(existing.map(c => [c.id, c]));
-      for (const c of nearby) byId.set(c.id, { ...c, queriedAt: new Date().toISOString() });
-      localStorage.setItem('surveillance_cameras', JSON.stringify([...byId.values()]));
-
-      for (const cam of nearby) {
+      // Render camera markers
+      for (const [id, cameraData] of allCameras) {
         const el = document.createElement('div');
         el.style.cssText = `
           width: 22px; height: 22px; background: #FFB703;
@@ -392,22 +380,22 @@ export default function MapView() {
           .setHTML(`
             <div style="font-size:12px;line-height:1.6;">
               <strong>Surveillance Camera</strong><br/>
-              ${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ''}
-              ${cam.tags?.['surveillance:type'] ? `Type: ${cam.tags['surveillance:type']}<br/>` : ''}
-              ${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ''}
-              <span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span>
+              ${cameraData.tags?.name ? `Name: ${cameraData.tags.name}<br/>` : ''}
+              ${cameraData.tags?.['surveillance:type'] ? `Type: ${cameraData.tags['surveillance:type']}<br/>` : ''}
+              ${cameraData.tags?.operator ? `Operator: ${cameraData.tags.operator}<br/>` : ''}
+              <span style="color:#888;">${cameraData.lat.toFixed(6)}, ${cameraData.lon.toFixed(6)}</span>
             </div>
           `);
 
         const marker = new mapboxgl.Marker({ element: el })
-          .setLngLat([cam.lon, cam.lat])
+          .setLngLat([cameraData.lon, cameraData.lat])
           .setPopup(popup)
           .addTo(map.current);
 
         cameraMarkersRef.current.push(marker);
       }
 
-      setCameras(nearby);
+      setCameras(allCameras);
     } catch (err) {
       console.error('Route analysis failed:', err);
     } finally {
