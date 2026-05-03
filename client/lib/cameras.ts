@@ -4,8 +4,15 @@ const STORAGE_KEY = 'surveillance_cameras'
 
 export interface StoredCamera extends Camera {
   queriedAt: string
-  queryLat: number
-  queryLon: number
+  queryLat?: number
+  queryLon?: number
+}
+
+export interface BboxParams {
+  south: number
+  west: number
+  north: number
+  east: number
 }
 
 export async function fetchCamerasForPoint(
@@ -29,6 +36,31 @@ export async function fetchCamerasForPoint(
     queriedAt: new Date().toISOString(),
     queryLat: lat,
     queryLon: lon,
+  }))
+
+  mergeCamerasToStorage(stamped)
+
+  return stamped
+}
+
+export async function fetchCamerasForBbox(
+  bbox: BboxParams
+): Promise<StoredCamera[]> {
+  const { south, west, north, east } = bbox
+  const res = await fetch(
+    `/api/cameras?south=${south}&west=${west}&north=${north}&east=${east}`
+  )
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error ?? `Camera fetch failed (${res.status})`)
+  }
+
+  const { cameras }: { cameras: Camera[] } = await res.json()
+
+  const stamped: StoredCamera[] = cameras.map((c) => ({
+    ...c,
+    queriedAt: new Date().toISOString(),
   }))
 
   mergeCamerasToStorage(stamped)
