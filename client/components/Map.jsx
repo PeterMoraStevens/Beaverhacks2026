@@ -1068,23 +1068,23 @@ export default function MapView() {
       }, 0);
       const analysis = computeRouteAnalysis(primaryCoords, nearby);
       setAnalysisData(analysis);
-      for (const cam of nearby) {
-        const el = document.createElement("div");
-        el.style.cssText =
-          "width:22px;height:22px;background:#FFB703;border:2px solid #c47c00;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;";
-        el.innerHTML = "📷";
-        const popup = new mapboxgl.Popup({
-          offset: 14,
-          closeButton: false,
-        }).setHTML(
-          `<div style="font-size:12px;line-height:1.6;"><strong>Surveillance Camera</strong><br/>${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ""}${cam.tags?.["surveillance:type"] ? `Type: ${cam.tags["surveillance:type"]}<br/>` : ""}${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ""}<span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span></div>`,
-        );
-        const marker = new mapboxgl.Marker({ element: el })
-          .setLngLat([cam.lon, cam.lat])
-          .setPopup(popup)
-          .addTo(map.current);
-        cameraMarkersRef.current.push(marker);
-      }
+      // for (const cam of nearby) {
+      //   // const el = document.createElement("div");
+      //   // el.style.cssText =
+      //   //   "width:22px;height:22px;background:#FFB703;border:2px solid #c47c00;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;";
+      //   // el.innerHTML = "📷";
+      //   // const popup = new mapboxgl.Popup({
+      //   //   offset: 14,
+      //   //   closeButton: false,
+      //   // }).setHTML(
+      //   //   `<div style="font-size:12px;line-height:1.6;"><strong>Surveillance Camera</strong><br/>${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ""}${cam.tags?.["surveillance:type"] ? `Type: ${cam.tags["surveillance:type"]}<br/>` : ""}${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ""}<span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span></div>`,
+      //   // );
+      //   const marker = new mapboxgl.Marker({ element: el })
+      //     .setLngLat([cam.lon, cam.lat])
+      //     .setPopup(popup)
+      //     .addTo(map.current);
+      //   cameraMarkersRef.current.push(marker);
+      // }
       setCameras(nearby);
       setAnalyzing(false);
       const scoredTrip = routes.map((r) => ({
@@ -1647,44 +1647,86 @@ export default function MapView() {
                 gap: "24px",
               }}
             >
-              {[
-                { value: analysisData.totalCameras, label: "Cameras" },
-                { value: `${analysisData.routeMiles}`, label: "Miles" },
-                {
-                  value: analysisData.worstCount,
-                  label: "Worst Block",
-                  color: "#E63946",
-                },
-              ].map(({ value, label, color }) => (
-                <div key={label} style={{ textAlign: "center" }}>
-                  <div
-                    style={{
-                      fontSize: 64,
-                      fontWeight: 900,
-                      lineHeight: 1,
-                      color: color || scoreColor,
-                      letterSpacing: "-4px",
-                    }}
-                  >
-                    {value}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: "rgba(255,255,255,0.6)",
-                      textTransform: "uppercase",
-                      letterSpacing: 2,
-                      marginTop: 6,
-                    }}
-                  >
-                    {label}
-                  </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  background: "rgba(0,0,0,0.55)",
+                  backdropFilter: "blur(8px)",
+                  borderRadius: 20,
+                  padding: "12px 24px",
+                  flex: 1,
+                  height: "100%",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 64,
+                    fontWeight: 900,
+                    lineHeight: 1,
+                    color: scoreColor,
+                    letterSpacing: "-4px",
+                  }}
+                >
+                  {analysisData.score}
                 </div>
-              ))}
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: scoreColor,
+                    textTransform: "uppercase",
+                    letterSpacing: 2,
+                    marginTop: 6,
+                    alignItems: "center",
+                  }}
+                >
+                  Safety Score
+                </div>
+              </div>
+              <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                background: "rgba(0,0,0,0.55)",
+                backdropFilter: "blur(8px)",
+                borderRadius: 20,
+                padding: "12px 24px",
+                flex: 1,
+                height: "100%",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 64,
+                  fontWeight: 900,
+                  lineHeight: 1,
+                  color: scoreColor,
+                  letterSpacing: "-4px",
+                }}
+              >
+                {analysisData.totalCameras}
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: scoreColor,
+                  textTransform: "uppercase",
+                  letterSpacing: 2,
+                  marginTop: 6,
+                  alignItems: "center",
+                }}
+              >
+                Total Cameras
+              </div>
+            </div>
             </div>
 
-            <ResponsiveContainer
+             {/* Cell 3: Camera Stats & Graph (Bottom Left) */}
+            <div
               style={{
                 background: "rgba(0,0,0,0.35)",
                 backdropFilter: "blur(12px)",
@@ -1692,62 +1734,247 @@ export default function MapView() {
                 padding: "16px",
               }}
             >
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: "rgba(255,255,255,0.7)" }}>
+                Camera Exposure
+              </div>
+              
+              {/* Stats Row */}
               <div
                 style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  marginBottom: 12,
-                  color: "rgba(255,255,255,0.7)",
+                  display: "flex",
+                  justifyContent: "space-around",
+                  marginBottom: 16,
                 }}
-              />
-              <AreaChart>
-                <defs>
-                  <linearGradient
-                    id="exposureGradient"
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
-                    <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="distanceMi"
-                  tick={{ fontSize: 9, fill: "rgba(255,255,255,0.5)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 9, fill: "rgba(255,255,255,0.5)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    fontSize: 11,
-                    borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    background: "rgba(0,0,0,0.8)",
-                    color: "#fff",
-                  }}
-                  formatter={(value) => [`${value} cameras`, "Exposure"]}
-                  labelFormatter={(label) => `${label} mi`}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="cameras"
-                  stroke="#E63946"
-                  strokeWidth={2}
-                  fill="url(#exposureGradient)"
-                  isAnimationActive={true}
-                  animationDuration={1000}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+              >
+                {[
+                  { value: `${analysisData.routeMiles}`, label: "Total Miles" },
+                  { value: analysisData.worstCount, label: "Worst Block", color: "#E63946" },
+                ].map(({ value, label, color }) => (
+                  <div key={label} style={{ textAlign: "center" }}>
+                    <div
+                      style={{
+                        fontSize: 24,
+                        fontWeight: 900,
+                        color: color || "white",
+                        letterSpacing: "-1px",
+                      }}
+                    >
+                      {value}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: "rgba(255,255,255,0.6)",
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                        marginTop: 4,
+                      }}
+                    >
+                      {label}
+                    </div>
+                  </div>
+                ))}
+              </div>
 
+              {/* Graph */}
+              <ResponsiveContainer width="100%" height={60}>
+                <AreaChart
+                  data={analysisData.graphData}
+                  margin={{ top: 4, right: 0, left: -20, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
+                      <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="distanceMi"
+                    tick={{ fontSize: 8, fill: "rgba(255,255,255,0.5)" }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 8, fill: "rgba(255,255,255,0.5)" }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      fontSize: 11,
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      background: "rgba(0,0,0,0.8)",
+                      color: "#fff",
+                    }}
+                    formatter={(value) => [`${value} cameras`, "Exposure"]}
+                    labelFormatter={(label) => `${label} mi`}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="cameras"
+                    stroke="#E63946"
+                    strokeWidth={2}
+                    fill="url(#exposureGradient)"
+                    isAnimationActive={true}
+                    animationDuration={1000}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+
+              {/* Legend */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 10,
+                  marginTop: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                {[
+                  ["#00C853", "Low"],
+                  ["#FFD600", "Medium"],
+                  ["#FF6D00", "High"],
+                  ["#E63946", "Severe"],
+                ].map(([color, label]) => (
+                  <div
+                    key={label}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 9,
+                      color: "rgba(255,255,255,0.6)",
+                    }}
+                  >
+                    <div style={{ width: 12, height: 3, background: color, borderRadius: 2 }} />{" "}
+                    {label}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Cell 4: Route Comparison (Bottom Right) */}
             <div
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: "rgba(255,255,255,0.7)" }}>
+                Route Comparison
+              </div>
+
+              {/* Route Stats */}
+              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                <div
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: "rgba(230, 57, 70, 0.2)",
+                    border: "1px solid rgba(230, 57, 70, 0.3)",
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Your Route
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: "#E63946" }}>
+                    {formatTime(routeStats.original.time)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
+                    {formatDistance(routeStats.original.distance)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#FFB703", marginTop: 4, fontWeight: 600 }}>
+                    📷 {routeStats.original.cameras} camera{routeStats.original.cameras !== 1 ? "s" : ""}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: routeStats.safe
+                      ? "rgba(33, 150, 243, 0.2)"
+                      : "rgba(255,255,255,0.1)",
+                    border: `1px solid ${routeStats.safe ? "rgba(33, 150, 243, 0.3)" : "rgba(255,255,255,0.1)"}`,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "rgba(255,255,255,0.5)",
+                      marginBottom: 4,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Optimal Path
+                  </div>
+                  {routeStats.safe ? (
+                    <>
+                      <div
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 800,
+                          color: "#2196F3",
+                        }}
+                      >
+                        {formatTime(routeStats.safe.time)}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "rgba(255,255,255,0.6)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {formatDistance(routeStats.safe.distance)}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color:
+                            routeStats.safe.cameras <
+                            routeStats.original.cameras
+                              ? "#66bb6a"
+                              : "#c47c00",
+                          marginTop: 4,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {routeStats.safe.cameras} camera
+                        {routeStats.safe.cameras !== 1 ? "s" : ""}
+                        {routeStats.safe.cameras <
+                          routeStats.original.cameras && " ✓"}
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "rgba(255,255,255,0.4)",
+                        marginTop: 12,
+                      }}
+                    >
+                      Calculating…
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+            
+            {/* Bottom Right: Path comparison */}
+            {/* <div
               style={{
                 background: "rgba(0,0,0,0.35)",
                 backdropFilter: "blur(12px)",
@@ -1890,7 +2117,7 @@ export default function MapView() {
             </div>
           </div>
         </div>
-      )}
+      )} */}
 
       {/* ── Route stats panel (safe route comparison) ───────────────────────── */}
       {routeStats && !statsVisible && (
