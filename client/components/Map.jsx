@@ -318,6 +318,8 @@ export default function MapView() {
   const [statsVisible, setStatsVisible] = useState(true);
   const [showCameras, setShowCameras] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  
   const [tripHistory, setTripHistory] = useState(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -325,7 +327,19 @@ export default function MapView() {
     } catch {
       return [];
     }
+  });  const [isClient, setIsClient] = useState(false);
+
+  const [savedRoutes, setSavedRoutes] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      return JSON.parse(localStorage.getItem("saved_routes") || "[]");
+    } catch {
+      return [];
+    }
   });
+
+  const [showSavedRoutes, setShowSavedRoutes] = useState(false);
+  const [currentRouteId, setCurrentRouteId] = useState(null);
 
   // Animate panel in after showResults is set
   useEffect(() => {
@@ -366,6 +380,7 @@ export default function MapView() {
       fitBoundsOptions: { maxZoom: 15 },
     });
     map.current.addControl(geolocate, "bottom-left");
+    map.current.addControl(new mapboxgl.NavigationControl(), 'bottom-left');
     map.current.doubleClickZoom.disable();
 
     map.current.on("load", () => {
@@ -1017,6 +1032,7 @@ export default function MapView() {
   };
 
   const analyzeRoute = async () => {
+    
     const canAnalyze =
       mode === "route"
         ? pointsRef.current.length === 2
@@ -1174,6 +1190,206 @@ export default function MapView() {
     resetRouteColor();
     setMode(newMode);
   };
+
+  // ── Saved Routes helpers ─────────────────────────────────────────────────────────
+
+  // Save current route
+  const starTripFromHistory = (trip) => {
+    const isAlreadySaved = savedRoutes.some(
+      r => r.createdAt === trip.timestamp || r.id === String(trip.id)
+    );
+    if (isAlreadySaved) {
+      const next = savedRoutes.filter(
+        r => r.createdAt !== trip.timestamp && r.id !== String(trip.id)
+      );
+      setSavedRoutes(next);
+      localStorage.setItem('saved_routes', JSON.stringify(next));
+      return;
+    }
+    const newRoute = {
+      id: String(trip.id),
+      name: `Trip — ${new Date(trip.timestamp).toLocaleDateString()}`,
+      points: trip.waypoints || [],
+      routeCoords: trip.waypoints || [],
+      cameras: [],
+      createdAt: trip.timestamp,
+      mode: trip.mode,
+      profile: trip.profile,
+      routeStats: trip.original ? {
+        original: {
+          time: trip.original.duration,       // ← map duration → time
+          distance: trip.original.distance,
+          cameras: trip.original.cameraCount, // ← map cameraCount → cameras
+        },
+        safe: trip.safe ? {
+          time: trip.safe.duration,
+          distance: trip.safe.distance,
+          cameras: trip.safe.cameraCount,
+        } : null,
+      } : null,
+      analysisData: null,
+    };
+    const next = [newRoute, ...savedRoutes];
+    setSavedRoutes(next);
+    localStorage.setItem('saved_routes', JSON.stringify(next));
+  };
+  
+  const isTripStarred = (trip) =>
+    savedRoutes.some(r => r.createdAt === trip.timestamp || r.id === String(trip.id));
+
+    const saveCurrentRoute = (customName = null) => {
+      if (mode === "route" ? pointsRef.current.length !== 2 : pointsRef.current.length < 2) return;
+      const routeId = Date.now().toString();
+      const newRoute = {
+        id: routeId,
+        name: customName || `Route ${savedRoutes.length + 1}`,
+        points: [...pointsRef.current],
+        routeCoords: routeCoords ? [...routeCoords] : [...pointsRef.current],
+        cameras: [...cameras],
+        createdAt: new Date().toISOString(),
+        mode,
+        profile,
+        routeStats: routeStats ? { ...routeStats } : null,
+        analysisData: analysisData ? { ...analysisData } : null,
+      };
+      const next = [newRoute, ...savedRoutes];
+      setSavedRoutes(next);
+      localStorage.setItem('saved_routes', JSON.stringify(next));
+      setCurrentRouteId(routeId);
+    };
+  // Load a saved route
+  const loadSavedRoute = (route) => {
+    // Clear state
+    markersRef.current.forEach(m => m.remove());
+    markersRef.current = [];
+    cameraMarkersRef.current.forEach(m => m.remove());
+    cameraMarkersRef.current = [];
+    pointsRef.current = [];
+    prependModeRef.current = false;
+    setPrependModeState(false);
+    setPoints([]);
+    setCameras([]);
+    setActiveEndpoint(null);
+    setAnalysisData(null);
+    setRouteCoords(null);
+    setShowResults(false);
+    updateRoute([]);
+    updateSafeRouteLayer([]);
+    setRouteStats(null);
+    allRoutesRef.current = [];
+    allCamerasRef.current = [];
+    resetRouteColor();
+  
+    
+    // Remove graded layers
+    const style = map.current?.getStyle();
+    if (style) {
+      style.layers
+        .filter(l => l.id.startsWith('route-graded-'))
+        .forEach(l => { map.current.removeLayer(l.id); map.current.removeSource(l.id); });
+    }
+    if (map.current?.getLayer('route-line')) {
+      map.current.setLayoutProperty('route-line', 'visibility', 'visible');
+    }
+  
+    setMode(route.mode || 'draw');
+    setProfile(route.profile || 'walking');
+  
+    // Place markers
+    route.points.forEach((coord, i) => {
+      let result;
+      if (route.mode === 'route') {
+        result = createEndpointMarker(coord, i === 0 ? 'A' : 'B');
+      } else {
+        result = createMarker(coord);
+      }
+      markersRef.current.push(result.marker);
+      pointsRef.current.push(coord);
+      if (i === route.points.length - 1) setActiveEndpoint(result.id);
+    });
+    setPoints([...pointsRef.current]);
+  
+    // Draw route geometry
+    const coords = route.routeCoords?.length >= 2 ? route.routeCoords : route.points;
+    updateRoute(coords);
+    setRouteCoords(coords);
+  
+    // Restore camera markers
+    route.cameras.forEach(cam => {
+      const el = document.createElement('div');
+      el.style.cssText =
+        'width:22px;height:22px;background:#FFB703;border:2px solid #c47c00;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;';
+      el.innerHTML = '📷';
+      const popup = new mapboxgl.Popup({ offset: 14, closeButton: false }).setHTML(
+        `<div style="font-size:12px;line-height:1.6;"><strong>Surveillance Camera</strong><br/><span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span></div>`
+      );
+      const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat([cam.lon, cam.lat])
+        .setPopup(popup)
+        .addTo(map.current);
+      cameraMarkersRef.current.push(marker);
+    });
+    setCameras(route.cameras);
+  
+    // Restore stats panel
+    if (route.routeStats) {
+      setRouteStats(route.routeStats);
+      setStatsVisible(true);
+    }
+  
+    // Restore analysis + graded coloring
+    if (route.analysisData) {
+      setAnalysisData(route.analysisData);
+      setTimeout(() => {
+        applyColorGradedRoute(map.current, coords, route.cameras);
+        // Re-apply gradient on route-line
+        if (route.analysisData.gradientStops?.length >= 2) {
+          if (map.current?.getLayer('route-line')) {
+            map.current.setLayoutProperty('route-line', 'visibility', 'visible');
+            map.current.setPaintProperty('route-line', 'line-gradient', [
+              'interpolate', ['linear'], ['line-progress'],
+              ...route.analysisData.gradientStops,
+            ]);
+          }
+        }
+      }, 0);
+    }
+  
+    // Fly to route
+    if (route.points.length > 0) {
+      const lons = route.points.map(p => p[0]);
+      const lats = route.points.map(p => p[1]);
+      map.current?.fitBounds(
+        [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+        { padding: 80, duration: 1200 }
+      );
+    }
+  
+    setCurrentRouteId(route.id);
+    setShowSavedRoutes(false);
+  };
+
+  // Delete a saved route
+  const deleteSavedRoute = (routeId) => {
+    if (confirm('Delete this saved route?')) {
+      setSavedRoutes(savedRoutes.filter(r => r.id !== routeId));
+      if (currentRouteId === routeId) {
+        setCurrentRouteId(null);
+      }
+    }
+  };
+
+  // Rename a saved route
+  const renameRoute = (routeId, newName) => {
+    setSavedRoutes(savedRoutes.map(r => 
+      r.id === routeId ? { ...r, name: newName } : r
+    ));
+  };
+
+  // Save routes to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('saved_routes', JSON.stringify(savedRoutes));
+  }, [savedRoutes]);
 
   const handleSearch = async (value) => {
     setSearch(value);
@@ -1463,6 +1679,28 @@ export default function MapView() {
         >
           {showCameras ? "Toggle off " : "Toggle on "} Heatmap
         </button>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowSavedRoutes(!showSavedRoutes); }}
+          style={{
+            background: showSavedRoutes ? "#FFB703" : "white",
+            border: "1px solid #e0e0e0",
+            padding: "7px 14px",
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+            color: showSavedRoutes ? "#333" : "#555",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+          }}
+        >
+          ⭐ Saved {savedRoutes.length > 0 && `(${savedRoutes.length})`}
+        </button>
+
 
         {/* Search */}
         <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
@@ -2261,6 +2499,32 @@ export default function MapView() {
               ? "Animating…"
               : "Analyze Route →"}
         </button>
+
+
+        <button
+          onClick={(e) => { e.stopPropagation(); saveCurrentRoute(); }}
+          disabled={!(routeStats && (mode === "route" ? points.length === 2 : points.length >= 2))}
+          style={{
+            background: (routeStats && (mode === "route" ? points.length === 2 : points.length >= 2))
+              ? "#FFB703" : "#ccc",
+            color: "#333",
+            border: "none",
+            padding: "12px 20px",
+            borderRadius: 10,
+            fontSize: 13,
+            fontWeight: 700,
+            cursor: (routeStats && (mode === "route" ? points.length === 2 : points.length >= 2))
+              ? "pointer" : "not-allowed",
+            boxShadow: (routeStats && (mode === "route" ? points.length === 2 : points.length >= 2))
+              ? "0 2px 12px rgba(255,183,3,0.3)" : "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          ⭐ Save Route
+        </button>
+
       </div>
 
       {/* History panel */}
@@ -2392,6 +2656,22 @@ export default function MapView() {
                         {trip.mode === "route" ? "A→B" : "Free Draw"}
                       </span>
                     </div>
+
+                    {/* Star button */}
+                    <button
+                      onClick={() => starTripFromHistory(trip)}
+                      title={isTripStarred(trip) ? 'Remove from saved' : 'Save this route'}
+                      style={{
+                        background: isTripStarred(trip) ? '#fff8e7' : 'none',
+                        border: `1px solid ${isTripStarred(trip) ? '#FFB703' : '#e0e0e0'}`,
+                        borderRadius: 7, padding: '5px 8px', cursor: 'pointer',
+                        fontSize: 14, lineHeight: 1, color: isTripStarred(trip) ? '#FFB703' : '#ccc',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      ⭐
+                    </button>
+                    
                   </div>
                   <div
                     style={{
@@ -2527,7 +2807,158 @@ export default function MapView() {
             )}
           </div>
         </div>
+
+        
+      )}
+
+      {showSavedRoutes && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 61, left: 0, bottom: 0,
+            width: 320,
+            background: "white",
+            boxShadow: "4px 0 24px rgba(0,0,0,0.12)",
+            zIndex: 15,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div style={{
+            padding: "14px 16px", borderBottom: "1px solid #eee",
+            display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0,
+          }}>
+            <span style={{ fontWeight: 700, fontSize: 14, color: "#111" }}>Saved Routes</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {savedRoutes.length > 0 && (
+                <button
+                  onClick={() => { setSavedRoutes([]); localStorage.removeItem("saved_routes"); }}
+                  style={{ background: "none", border: "none", fontSize: 11, color: "#bbb", cursor: "pointer" }}
+                >
+                  Clear all
+                </button>
+              )}
+              <button
+                onClick={() => setShowSavedRoutes(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#999", fontSize: 18, lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div style={{ overflowY: "auto", flex: 1, padding: "8px 0" }}>
+            {savedRoutes.length === 0 ? (
+              <div style={{ color: "#bbb", fontSize: 13, textAlign: "center", marginTop: 48, lineHeight: 1.7 }}>
+                No saved routes yet.<br />Click ⭐ Save Route to save one.
+              </div>
+            ) : (
+              savedRoutes.map((route) => (
+                <div
+                  key={route.id}
+                  style={{
+                    margin: "0 12px 8px", padding: "12px", borderRadius: 10,
+                    background: currentRouteId === route.id ? "#fff8e7" : "#f9f9f9",
+                    border: `1px solid ${currentRouteId === route.id ? "#FFB703" : "#eee"}`,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: "#111" }}>{route.name}</div>
+                      <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>
+                        {new Date(route.createdAt).toLocaleDateString()} · {route.points.length} pts · {route.cameras.length} cams
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                        <span style={{ fontSize: 10, background: "#e8f5e9", color: "#388e3c", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+                          {route.profile === "driving" ? "🚗" : "🚶"} {route.profile}
+                        </span>
+                        <span style={{ fontSize: 10, background: "#e3f2fd", color: "#1565c0", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+                          {route.mode === "route" ? "A→B" : "Free Draw"}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button
+                        onClick={() => {
+                          const newName = prompt("Rename route:", route.name);
+                          if (newName?.trim()) renameRoute(route.id, newName.trim());
+                        }}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px", color: "#aaa" }}
+                      >✏️</button>
+                      <button
+                        onClick={() => deleteSavedRoute(route.id)}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px", color: "#E63946" }}
+                      >🗑️</button>
+                    </div>
+                  </div>
+
+                  {route.routeStats && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                      <div style={{ background: "#fff5f5", borderRadius: 7, padding: "8px", textAlign: "center", border: "1px solid #fcc" }}>
+                        <div style={{ fontSize: 10, color: "#999", marginBottom: 2, textTransform: "uppercase" }}>Your Route</div>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: "#E63946" }}>{formatTime(route.routeStats.original.time)}</div>
+                        <div style={{ fontSize: 11, color: "#888" }}>{formatDistance(route.routeStats.original.distance)}</div>
+                        <div style={{ fontSize: 11, color: "#c47c00", fontWeight: 600, marginTop: 2 }}>📷 {route.routeStats.original.cameras}</div>
+                      </div>
+                      <div style={{
+                        background: route.routeStats.safe ? "#f0f7ff" : "#f9f9f9",
+                        borderRadius: 7, padding: "8px", textAlign: "center",
+                        border: `1px solid ${route.routeStats.safe ? "#90caf9" : "#eee"}`,
+                      }}>
+                        <div style={{ fontSize: 10, color: "#999", marginBottom: 2, textTransform: "uppercase" }}>Safe Route</div>
+                        {route.routeStats.safe ? (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: 14, color: "#2196F3" }}>{formatTime(route.routeStats.safe.time)}</div>
+                            <div style={{ fontSize: 11, color: "#888" }}>{formatDistance(route.routeStats.safe.distance)}</div>
+                            <div style={{ fontSize: 11, color: "#388e3c", fontWeight: 600, marginTop: 2 }}>📷 {route.routeStats.safe.cameras}</div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: 11, color: "#bbb", marginTop: 10 }}>No safer<br />alternative</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => loadSavedRoute(route)}
+                      style={{
+                        flex: 1, background: "#E63946", color: "white", border: "none",
+                        borderRadius: 7, padding: "8px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >
+                      Load Route
+                    </button>
+                    {/* {route.analysisData && (
+                      <button
+                        onClick={() => {
+                          loadSavedRoute(route);
+                          setTimeout(() => {
+                            setAnalysisData(route.analysisData);
+                            setShowResults(true);
+                          }, 1400);
+                        }}
+                        style={{
+                          flex: 1, background: "white", color: "#333", border: "1px solid #e0e0e0",
+                          borderRadius: 7, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        }}
+                      >
+                        View Analysis
+                      </button>
+                    )} */}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       )}
     </div>
+
+    
+            
+
   );
 }
+   
