@@ -40,6 +40,7 @@ export default function MapView() {
   const pointsRef = useRef([]);
   const markerClickedRef = useRef(false);
   const activeEndpointRef = useRef(null);
+  const prependModeRef = useRef(false);
   const [points, setPoints] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -133,6 +134,11 @@ export default function MapView() {
     setActiveEndpointId(id);
   };
 
+  const setPrependMode = (id) => {
+    prependModeRef.current = true;
+    setActiveEndpoint(id);
+  };
+
   const deletePoint = (id) => {
     const index = markersRef.current.findIndex(m => m._id === id);
     if (index === -1) return;
@@ -149,6 +155,7 @@ export default function MapView() {
 
     setPoints([...pointsRef.current]);
     updateRoute([...pointsRef.current]);
+    markersRef.current.forEach(m => m._refreshPopup?.());
   };
 
   const createMarkerElement = () => {
@@ -165,9 +172,21 @@ export default function MapView() {
     return el;
   };
 
-  const createPopupContent = (onDelete, onSetEndpoint) => {
+  const createPopupContent = (onDelete, onSetEndpoint, onPrepend) => {
     const wrapper = document.createElement('div');
     wrapper.style.cssText = 'display: flex; flex-direction: column; gap: 6px; padding: 2px;';
+
+    if (onPrepend) {
+      const prependBtn = document.createElement('button');
+      prependBtn.innerText = '⬆️ Add point before this';
+      prependBtn.style.cssText = `
+        background: #9C27B0; color: white; border: none;
+        padding: 6px 12px; border-radius: 6px; cursor: pointer;
+        font-size: 12px; font-weight: 600; width: 100%;
+      `;
+      prependBtn.addEventListener('click', (e) => { e.stopPropagation(); onPrepend(); });
+      wrapper.appendChild(prependBtn);
+    }
 
     const extendBtn = document.createElement('button');
     extendBtn.innerText = '📍 Extend from here';
@@ -192,7 +211,6 @@ export default function MapView() {
     return wrapper;
   };
 
-  // Shared drag listeners — attached once per marker
   const attachDragListeners = (marker, id) => {
     marker.on('drag', () => {
       const index = markersRef.current.findIndex(m => m._id === id);
@@ -225,14 +243,22 @@ export default function MapView() {
     marker._id = id;
     marker._el = el;
 
-    popup.setDOMContent(createPopupContent(
-      () => { popup.remove(); deletePoint(id); },
-      () => { popup.remove(); setActiveEndpoint(id); }
-    ));
+    const refreshPopup = () => {
+      const isFirst = markersRef.current[0]?._id === id;
+      popup.setDOMContent(createPopupContent(
+        () => { popup.remove(); deletePoint(id); },
+        () => { popup.remove(); setActiveEndpoint(id); },
+        isFirst ? () => { popup.remove(); setPrependMode(id); } : null
+      ));
+    };
+
+    refreshPopup();
+    marker._refreshPopup = refreshPopup;
 
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       markerClickedRef.current = true;
+      refreshPopup();
       marker.togglePopup();
     });
 
@@ -247,11 +273,25 @@ export default function MapView() {
     setPoints([...pointsRef.current]);
     updateRoute([...pointsRef.current]);
     setActiveEndpoint(id);
+    markersRef.current.forEach(m => m._refreshPopup?.());
   };
 
   const addPoint = (coord) => {
     const { marker, id } = createMarker(coord);
 
+    // Prepend mode — insert before index 0
+    if (prependModeRef.current) {
+      prependModeRef.current = false;
+      markersRef.current.splice(0, 0, marker);
+      pointsRef.current.splice(0, 0, coord);
+      setPoints([...pointsRef.current]);
+      updateRoute([...pointsRef.current]);
+      setActiveEndpoint(id);
+      markersRef.current.forEach(m => m._refreshPopup?.());
+      return;
+    }
+
+    // Extend from selected non-last point
     if (activeEndpointRef.current && markersRef.current.length > 0) {
       const activeIndex = markersRef.current.findIndex(m => m._id === activeEndpointRef.current);
       if (activeIndex !== -1 && activeIndex < markersRef.current.length - 1) {
@@ -260,15 +300,18 @@ export default function MapView() {
         setPoints([...pointsRef.current]);
         updateRoute([...pointsRef.current]);
         setActiveEndpoint(id);
+        markersRef.current.forEach(m => m._refreshPopup?.());
         return;
       }
     }
 
+    // Default — append to end
     markersRef.current.push(marker);
     pointsRef.current = [...pointsRef.current, coord];
     setPoints([...pointsRef.current]);
     updateRoute([...pointsRef.current]);
     setActiveEndpoint(id);
+    markersRef.current.forEach(m => m._refreshPopup?.());
   };
 
   const clearRoute = () => {
@@ -277,6 +320,7 @@ export default function MapView() {
     cameraMarkersRef.current.forEach(m => m.remove());
     cameraMarkersRef.current = [];
     pointsRef.current = [];
+    prependModeRef.current = false;
     setPoints([]);
     setCameras([]);
     setActiveEndpoint(null);
@@ -446,7 +490,9 @@ export default function MapView() {
             : points.length === 0
             ? 'Click map to add points'
             : activeEndpointId
-            ? '📍 Extending from selected point — click map'
+            ? prependModeRef.current
+              ? '⬆️ Adding before first point — click map'
+              : '📍 Extending from selected point — click map'
             : `${points.length} point${points.length !== 1 ? 's' : ''} · click pin to select`}
         </span>
       </div>
