@@ -55,6 +55,8 @@ export default function MapView() {
   const pointsRef = useRef([]);
   const markerClickedRef = useRef(false);
   const [points, setPoints] = useState([]);
+  const [cameras, setCameras] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);
   const [search, setSearch] = useState('');
   const [suggestions, setSuggestions] = useState([]);
 
@@ -211,11 +213,97 @@ export default function MapView() {
     cameraMarkersRef.current = [];
     pointsRef.current = [];
     setPoints([]);
+    setCameras([]);
+    clearCamerasFromStorage();
     updateRoute([]);
   };
 
-  const analyzeRoute = () => {
-    console.log('Analyzing route:', pointsRef.current);
+  const analyzeRoute = async () => {
+    if (pointsRef.current.length < 2 || analyzing) return;
+    setAnalyzing(true);
+
+    cameraMarkersRef.current.forEach(m => m.remove());
+    cameraMarkersRef.current = [];
+
+    const coords = pointsRef.current; // [[lon, lat], ...]
+    const lons = coords.map(p => p[0]);
+    const lats = coords.map(p => p[1]);
+
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const midLat = (minLat + maxLat) / 2;
+
+    // 25ft = 7.62m bbox padding
+    const PAD_M = 7.62;
+    const south = minLat - metersToDegLat(PAD_M);
+    const north = maxLat + metersToDegLat(PAD_M);
+    const west  = minLon - metersToDegLon(PAD_M, midLat);
+    const east  = maxLon + metersToDegLon(PAD_M, midLat);
+
+    try {
+      const res = await fetch(
+        `/api/cameras?south=${south}&west=${west}&north=${north}&east=${east}`
+      );
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const { cameras: allCameras } = await res.json();
+
+      // Keep only cameras within 50m of any path segment
+      const WATCH_RADIUS_M = 50;
+      const nearby = allCameras.filter(cam =>
+        isCameraNearPath(cam.lat, cam.lon, coords, WATCH_RADIUS_M)
+      );
+
+      // Persist to localStorage (merge by ID)
+      const existing = JSON.parse(localStorage.getItem('surveillance_cameras') || '[]');
+      const byId = new globalThis.Map(existing.map(c => [c.id, c]));
+      for (const c of nearby) byId.set(c.id, { ...c, queriedAt: new Date().toISOString() });
+      localStorage.setItem('surveillance_cameras', JSON.stringify([...byId.values()]));
+
+      // Render camera markers
+      for (const cam of nearby) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width: 22px;
+          height: 22px;
+          background: #FFB703;
+          border: 2px solid #c47c00;
+          border-radius: 5px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 13px;
+          cursor: pointer;
+        `;
+        el.innerHTML = '📷';
+
+        const popup = new mapboxgl.Popup({ offset: 14, closeButton: false })
+          .setHTML(`
+            <div style="font-size:12px;line-height:1.6;">
+              <strong>Surveillance Camera</strong><br/>
+              ${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ''}
+              ${cam.tags?.['surveillance:type'] ? `Type: ${cam.tags['surveillance:type']}<br/>` : ''}
+              ${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ''}
+              <span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span>
+            </div>
+          `);
+
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat([cam.lon, cam.lat])
+          .setPopup(popup)
+          .addTo(map.current);
+
+        cameraMarkersRef.current.push(marker);
+      }
+
+      setCameras(nearby);
+    } catch (err) {
+      console.error('Route analysis failed:', err);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const handleSearch = async (value) => {
@@ -315,8 +403,12 @@ export default function MapView() {
           )}
         </div>
 
-        <span style={{ fontSize: 13, color: '#444', flexShrink: 0 }}>
-          {points.length === 0
+        <span style={{ fontSize: 13, color: cameras.length > 0 ? '#c47c00' : '#444', fontWeight: cameras.length > 0 ? 600 : 400, flexShrink: 0 }}>
+          {cameras.length > 0
+            ? `📷 ${cameras.length} camera${cameras.length !== 1 ? 's' : ''} watching your route`
+            : analyzing
+            ? 'Analyzing…'
+            : points.length === 0
             ? 'Click map to add points'
             : `${points.length} point${points.length !== 1 ? 's' : ''} · click pin to delete`}
         </span>
@@ -355,22 +447,23 @@ export default function MapView() {
         </button>
 
         <button
-          onClick={(e) => { e.stopPropagation(); if (points.length >= 2) analyzeRoute(); }}
+          onClick={(e) => { e.stopPropagation(); analyzeRoute(); }}
+          disabled={points.length < 2 || analyzing}
           style={{
-            background: points.length >= 2 ? '#E63946' : '#ccc',
+            background: points.length < 2 || analyzing ? '#ccc' : '#E63946',
             color: 'white',
             border: 'none',
             padding: '12px 24px',
             borderRadius: 10,
             fontSize: 13,
             fontWeight: 700,
-            cursor: points.length >= 2 ? 'pointer' : 'not-allowed',
-            boxShadow: points.length >= 2 ? '0 2px 12px rgba(230,57,70,0.4)' : 'none',
+            cursor: points.length < 2 || analyzing ? 'not-allowed' : 'pointer',
+            boxShadow: points.length >= 2 && !analyzing ? '0 2px 12px rgba(230,57,70,0.4)' : 'none',
             display: 'flex',
             alignItems: 'center',
             gap: 6
           }}>
-          Analyze Route →
+          {analyzing ? 'Analyzing…' : 'Analyze Route →'}
         </button>
       </div>
     </div>
