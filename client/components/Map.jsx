@@ -1631,29 +1631,7 @@ export default function MapView() {
               </button>
             ))}
           </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setHistoryOpen((o) => !o);
-            }}
-            style={{
-              background: historyOpen ? "#1976D2" : "white",
-              border: "1px solid #e0e0e0",
-              padding: "9px 18px",
-              borderRadius: 8,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: "pointer",
-              color: historyOpen ? "white" : "#555",
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-            }}
-          >
-            History {tripHistory.length > 0 && `(${tripHistory.length})`}
-          </button>
-        </div>
+         
 
         {/* Camera heatmap toggle */}
         <button
@@ -1700,7 +1678,6 @@ export default function MapView() {
         >
           Saved {savedRoutes.length > 0 && `(${savedRoutes.length})`}
         </button>
-
 
         {/* Search */}
         <div style={{ position: "relative", flex: 1, maxWidth: 360 }}>
@@ -1758,6 +1735,32 @@ export default function MapView() {
               ))}
             </div>
           )}
+        </div>
+
+        
+
+        <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setHistoryOpen((o) => !o);
+            }}
+            style={{
+              background: historyOpen ? "#1976D2" : "white",
+              border: "1px solid #e0e0e0",
+              padding: "7px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              color: historyOpen ? "white" : "#555",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+            }}
+          >
+            History {tripHistory.length > 0 && `(${tripHistory.length})`}
+          </button>
         </div>
 
         {/* Status text */}
