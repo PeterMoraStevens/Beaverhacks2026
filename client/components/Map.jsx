@@ -1213,7 +1213,7 @@ export default function MapView() {
       </div>
 
       {/* Results — floating over map */}
-      {showResults && analysisData && (
+      {showResults && analysisData && routeStats && (
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
@@ -1227,7 +1227,7 @@ export default function MapView() {
             transition: "all 0.4s cubic-bezier(0.32, 0.72, 0, 1)",
             zIndex: 9,
             width: "90%",
-            maxWidth: 420,
+            maxWidth: 800, // Increased for 2x2 grid
             textAlign: "center",
           }}
         >
@@ -1249,353 +1249,339 @@ export default function MapView() {
               alignItems: "center",
               justifyContent: "center",
               color: "white",
+              zIndex: 10,
             }}
           >
             ×
           </button>
 
-          <div style={{ marginBottom: 16 }}>
-            <MiniRouteMap coords={routeCoords} analysisData={analysisData} />
-          </div>
-
+          {/* 2x2 Grid Container */}
           <div
             style={{
-              display: "inline-block",
-              background: "rgba(0,0,0,0.55)",
-              backdropFilter: "blur(8px)",
-              borderRadius: 20,
-              padding: "12px 32px",
-              marginBottom: 10,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 16,
+              maxHeight: "80vh",
+              overflowY: "auto",
+              padding: "4px",
             }}
           >
+            {/* Cell 1: Mini Map (Top Left) */}
             <div
               style={{
-                fontSize: 80,
-                fontWeight: 900,
-                lineHeight: 1,
-                color: scoreColor,
-                letterSpacing: "-4px",
-              }}
-            >
-              {analysisData.score}
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: scoreColor,
-                textTransform: "uppercase",
-                letterSpacing: 3,
-                marginTop: 2,
-              }}
-            >
-              {scoreLabel}
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: "rgba(0,0,0,0.35)",
-              backdropFilter: "blur(12px)",
-              borderRadius: 16,
-              padding: "16px 20px",
-              marginTop: 8,
-            }}
-          >
-            <div
-              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "12px",
                 display: "flex",
-                justifyContent: "center",
-                gap: 36,
-                marginBottom: 16,
+                flexDirection: "column",
               }}
             >
-              {[
-                { value: analysisData.totalCameras, label: "Cameras" },
-                { value: `${analysisData.routeMiles}`, label: "Miles" },
-                { value: analysisData.worstCount, label: "Worst Block", color: "#E63946" },
-              ].map(({ value, label, color }) => (
-                <div key={label} style={{ textAlign: "center" }}>
-                  <div
-                    style={{
-                      fontSize: 28,
-                      fontWeight: 900,
-                      color: color || "white",
-                      letterSpacing: "-1px",
-                    }}
-                  >
-                    {value}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      color: "rgba(255,255,255,0.6)",
-                      textTransform: "uppercase",
-                      letterSpacing: 1.5,
-                      marginTop: 2,
-                    }}
-                  >
-                    {label}
-                  </div>
-                </div>
-              ))}
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "rgba(255,255,255,0.7)" }}>
+                Route Preview
+              </div>
+              <MiniRouteMap coords={routeCoords} analysisData={analysisData} />
             </div>
 
-            <ResponsiveContainer width="100%" height={70}>
-              <AreaChart
-                data={analysisData.graphData}
-                margin={{ top: 4, right: 0, left: -20, bottom: 0 }}
+            {/* Cell 2: Score Panel (Top Right) */}
+            <div
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "20px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <div
+                style={{
+                  display: "inline-block",
+                  background: "rgba(0,0,0,0.55)",
+                  backdropFilter: "blur(8px)",
+                  borderRadius: 20,
+                  padding: "12px 32px",
+                }}
               >
-                <defs>
-                  <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
-                    <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="distanceMi"
-                  tick={{ fontSize: 9, fill: "rgba(255,255,255,0.5)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 9, fill: "rgba(255,255,255,0.5)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    fontSize: 11,
-                    borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    background: "rgba(0,0,0,0.8)",
-                    color: "#fff",
-                  }}
-                  formatter={(value) => [`${value} cameras`, "Exposure"]}
-                  labelFormatter={(label) => `${label} mi`}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="cameras"
-                  stroke="#E63946"
-                  strokeWidth={2}
-                  fill="url(#exposureGradient)"
-                  isAnimationActive={true}
-                  animationDuration={1000}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                gap: 14,
-                marginTop: 10,
-              }}
-            >
-              {[
-                ["#00C853", "Low"],
-                ["#FFD600", "Medium"],
-                ["#FF6D00", "High"],
-                ["#E63946", "Severe"],
-              ].map(([color, label]) => (
                 <div
-                  key={label}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    fontSize: 10,
-                    color: "rgba(255,255,255,0.6)",
+                    fontSize: 80,
+                    fontWeight: 900,
+                    lineHeight: 1,
+                    color: scoreColor,
+                    letterSpacing: "-4px",
                   }}
                 >
-                  <div style={{ width: 14, height: 3, background: color, borderRadius: 2 }} />{" "}
-                  {label}
+                  {analysisData.score}
                 </div>
-              ))}
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: scoreColor,
+                    textTransform: "uppercase",
+                    letterSpacing: 3,
+                    marginTop: 2,
+                  }}
+                >
+                  {scoreLabel}
+                </div>
+              </div>
+            </div>
+
+            {/* Cell 3: Camera Stats & Graph (Bottom Left) */}
+            <div
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "16px",
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: "rgba(255,255,255,0.7)" }}>
+                Camera Exposure
+              </div>
+              
+              {/* Stats Row */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-around",
+                  marginBottom: 16,
+                }}
+              >
+                {[
+                  { value: analysisData.totalCameras, label: "Total Cameras" },
+                  { value: `${analysisData.routeMiles}`, label: "Total Miles" },
+                  { value: analysisData.worstCount, label: "Worst Block", color: "#E63946" },
+                ].map(({ value, label, color }) => (
+                  <div key={label} style={{ textAlign: "center" }}>
+                    <div
+                      style={{
+                        fontSize: 24,
+                        fontWeight: 900,
+                        color: color || "white",
+                        letterSpacing: "-1px",
+                      }}
+                    >
+                      {value}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: "rgba(255,255,255,0.6)",
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                        marginTop: 4,
+                      }}
+                    >
+                      {label}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Graph */}
+              <ResponsiveContainer width="100%" height={60}>
+                <AreaChart
+                  data={analysisData.graphData}
+                  margin={{ top: 4, right: 0, left: -20, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
+                      <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="distanceMi"
+                    tick={{ fontSize: 8, fill: "rgba(255,255,255,0.5)" }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 8, fill: "rgba(255,255,255,0.5)" }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      fontSize: 11,
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      background: "rgba(0,0,0,0.8)",
+                      color: "#fff",
+                    }}
+                    formatter={(value) => [`${value} cameras`, "Exposure"]}
+                    labelFormatter={(label) => `${label} mi`}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="cameras"
+                    stroke="#E63946"
+                    strokeWidth={2}
+                    fill="url(#exposureGradient)"
+                    isAnimationActive={true}
+                    animationDuration={1000}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+
+              {/* Legend */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 10,
+                  marginTop: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                {[
+                  ["#00C853", "Low"],
+                  ["#FFD600", "Medium"],
+                  ["#FF6D00", "High"],
+                  ["#E63946", "Severe"],
+                ].map(([color, label]) => (
+                  <div
+                    key={label}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 9,
+                      color: "rgba(255,255,255,0.6)",
+                    }}
+                  >
+                    <div style={{ width: 12, height: 3, background: color, borderRadius: 2 }} />{" "}
+                    {label}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Cell 4: Route Comparison (Bottom Right) */}
+            <div
+              style={{
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(12px)",
+                borderRadius: 16,
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: "rgba(255,255,255,0.7)" }}>
+                Route Comparison
+              </div>
+
+              {/* Route Stats */}
+              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                <div
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: "rgba(230, 57, 70, 0.2)",
+                    border: "1px solid rgba(230, 57, 70, 0.3)",
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Your Route
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: "#E63946" }}>
+                    {formatTime(routeStats.original.time)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
+                    {formatDistance(routeStats.original.distance)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#FFB703", marginTop: 4, fontWeight: 600 }}>
+                    📷 {routeStats.original.cameras} camera{routeStats.original.cameras !== 1 ? "s" : ""}
+                  </div>
+                </div>
+                
+                <div
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "10px 8px",
+                    borderRadius: 10,
+                    background: routeStats.safe ? "rgba(33, 150, 243, 0.2)" : "rgba(255,255,255,0.05)",
+                    border: `1px solid ${routeStats.safe ? "rgba(33, 150, 243, 0.3)" : "rgba(255,255,255,0.1)"}`,
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Safe Route
+                  </div>
+                  {routeStats.safe ? (
+                    <>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: "#4CAF50" }}>
+                        {formatTime(routeStats.safe.time)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 2 }}>
+                        {formatDistance(routeStats.safe.distance)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#4CAF50", marginTop: 4, fontWeight: 600 }}>
+                        📷 {routeStats.safe.cameras} camera{routeStats.safe.cameras !== 1 ? "s" : ""}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 12 }}>
+                      No safer alternative found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Radius Slider */}
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: 10,
+                    color: "rgba(255,255,255,0.6)",
+                    marginBottom: 6,
+                  }}
+                >
+                  <span>Camera avoidance radius</span>
+                  <span style={{ fontWeight: 600, color: "#2196F3" }}>
+                    {safeRadius} m ({Math.round(safeRadius * 3.281)} ft)
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={10}
+                  max={200}
+                  step={5}
+                  value={safeRadius}
+                  onChange={(e) => setSafeRadius(parseInt(e.target.value))}
+                  style={{ width: "100%", accentColor: "#2196F3" }}
+                />
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: 9,
+                    color: "rgba(255,255,255,0.4)",
+                    marginTop: 2,
+                  }}
+                >
+                  <span>10 m</span>
+                  <span>200 m</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* ── Route stats panel (safe route comparison) ───────────────────────── */}
-      {routeStats && !statsVisible && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: "absolute",
-            bottom: 90,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 10,
-          }}
-        >
-          <button
-            onClick={() => setStatsVisible(true)}
-            style={{
-              background: "white",
-              border: "1px solid #e0e0e0",
-              padding: "8px 18px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
-              boxShadow: "0 2px 12px rgba(0,0,0,0.12)",
-              color: "#555",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            📊 Show Results — {routeStats.original.cameras} camera
-            {routeStats.original.cameras !== 1 ? "s" : ""} on route
-          </button>
-        </div>
-      )}
+      
 
-      {routeStats && statsVisible && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: "absolute",
-            bottom: 90,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "white",
-            borderRadius: 14,
-            padding: "16px 20px",
-            boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
-            zIndex: 10,
-            minWidth: 360,
-            display: "flex",
-            flexDirection: "column",
-            gap: 14,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: -4,
-            }}
-          >
-            <span style={{ fontWeight: 700, fontSize: 13, color: "#333", letterSpacing: "-0.2px" }}>
-              Route Analysis
-            </span>
-            <button
-              onClick={() => setStatsVisible(false)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "#999",
-                fontSize: 16,
-                padding: "0 2px",
-                lineHeight: 1,
-              }}
-            >
-              ✕
-            </button>
-          </div>
-
-          <div style={{ display: "flex", gap: 12 }}>
-            <div
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: "10px 8px",
-                borderRadius: 10,
-                background: "#fff5f5",
-                border: "1px solid #fcc",
-              }}
-            >
-              <div style={{ fontSize: 11, color: "#999", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Your Route
-              </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: "#E63946" }}>
-                {formatTime(routeStats.original.time)}
-              </div>
-              <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                {formatDistance(routeStats.original.distance)}
-              </div>
-              <div style={{ fontSize: 12, color: "#c47c00", marginTop: 4, fontWeight: 600 }}>
-                📷 {routeStats.original.cameras} camera{routeStats.original.cameras !== 1 ? "s" : ""}
-              </div>
-            </div>
-            <div
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: "10px 8px",
-                borderRadius: 10,
-                background: routeStats.safe ? "#f0f7ff" : "#f9f9f9",
-                border: `1px solid ${routeStats.safe ? "#90caf9" : "#eee"}`,
-              }}
-            >
-              <div style={{ fontSize: 11, color: "#999", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Safe Route
-              </div>
-              {routeStats.safe ? (
-                <>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: "#2196F3" }}>
-                    {formatTime(routeStats.safe.time)}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                    {formatDistance(routeStats.safe.distance)}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#388e3c", marginTop: 4, fontWeight: 600 }}>
-                    📷 {routeStats.safe.cameras} camera{routeStats.safe.cameras !== 1 ? "s" : ""}
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: 13, color: "#999", marginTop: 12 }}>
-                  No safer<br />alternative found
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 12,
-                color: "#666",
-                marginBottom: 6,
-              }}
-            >
-              <span>Camera avoidance radius</span>
-              <span style={{ fontWeight: 600, color: "#2196F3" }}>
-                {safeRadius} m ({Math.round(safeRadius * 3.281)} ft)
-              </span>
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={200}
-              step={5}
-              value={safeRadius}
-              onChange={(e) => setSafeRadius(parseInt(e.target.value))}
-              style={{ width: "100%", accentColor: "#2196F3" }}
-            />
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 11,
-                color: "#bbb",
-                marginTop: 2,
-              }}
-            >
-              <span>10 m</span>
-              <span>200 m</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Bottom action bar ──────────────────────────────────────────────────── */}
       <div
