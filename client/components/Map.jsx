@@ -25,9 +25,20 @@ export default function Map() {
       zoom: 4
     });
 
+    // automatically zoom to user's location on load
+    const geolocate = new mapboxgl.GeolocateControl({
+      positionOptions: { enableHighAccuracy: true },
+      trackUserLocation: true,
+      fitBoundsOptions: { maxZoom: 15 }
+    });
+    
+    map.current.addControl(geolocate);
+
     map.current.doubleClickZoom.disable();
 
     map.current.on('load', () => {
+      geolocate.trigger(); 
+
       map.current.addSource('route', {
         type: 'geojson',
         data: {
