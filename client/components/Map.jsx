@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { clearCamerasFromStorage } from '@/lib/cameras';
@@ -34,15 +34,28 @@ function isCameraNearPath(camLat, camLon, pathCoords, thresholdMeters) {
 function metersToDegLat(meters) { return meters / 111000; }
 function metersToDegLon(meters, latDeg) { return meters / (111000 * Math.cos(latDeg * (Math.PI / 180))); }
 
+function camerasToGeoJSON(cameras) {
+  return {
+    type: 'FeatureCollection',
+    features: cameras.map(cam => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [cam.lon, cam.lat] },
+      properties: { ...cam.tags, _id: cam.id, _lat: cam.lat, _lon: cam.lon }
+    }))
+  };
+}
+
 export default function MapView() {
   const mapContainer = useRef(null);
   const map = useRef(null);
   const markersRef = useRef([]);
-  const cameraMarkersRef = useRef([]);
   const pointsRef = useRef([]);
   const markerClickedRef = useRef(false);
   const activeEndpointRef = useRef(null);
   const prependModeRef = useRef(false);
+  const addPointRef = useRef(null);
+  const insertPointRef = useRef(null);
+  const analysisActiveRef = useRef(false);
   const [points, setPoints] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -74,11 +87,11 @@ export default function MapView() {
     map.current.on('load', () => {
       geolocate.trigger();
 
+      // ── Route ──────────────────────────────────────────────────────────────
       map.current.addSource('route', {
         type: 'geojson',
         data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
       });
-
       map.current.addLayer({
         id: 'route-line',
         type: 'line',
@@ -87,6 +100,125 @@ export default function MapView() {
         paint: { 'line-color': '#E63946', 'line-width': 4, 'line-opacity': 0.9 }
       });
 
+      // ── Camera cluster source ───────────────────────────────────────────────
+      map.current.addSource('cameras', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        cluster: true,
+        clusterMaxZoom: 15,
+        clusterRadius: 50
+      });
+
+      // Cluster bubbles — color + size scale with point_count
+      map.current.addLayer({
+        id: 'camera-clusters',
+        type: 'circle',
+        source: 'cameras',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-color': [
+            'step', ['get', 'point_count'],
+            '#FFB703',  // yellow   < 10
+            10, '#FB8500', // orange  10–49
+            50, '#E63946'  // red    ≥ 50
+          ],
+          'circle-radius': [
+            'step', ['get', 'point_count'],
+            18,      // < 10
+            10, 24,  // 10–49
+            50, 32   // ≥ 50
+          ],
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#fff',
+          'circle-opacity': 0.92
+        }
+      });
+
+      // Count labels inside cluster bubbles
+      map.current.addLayer({
+        id: 'camera-cluster-count',
+        type: 'symbol',
+        source: 'cameras',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
+          'text-size': 13
+        },
+        paint: { 'text-color': '#fff' }
+      });
+
+      // Individual camera dots (unclustered)
+      map.current.addLayer({
+        id: 'camera-unclustered',
+        type: 'circle',
+        source: 'cameras',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-color': '#FFB703',
+          'circle-radius': 7,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#c47c00',
+          'circle-opacity': 0.95
+        }
+      });
+
+      // Click cluster → zoom into it
+      map.current.on('click', 'camera-clusters', (e) => {
+        markerClickedRef.current = true;
+        const features = map.current.queryRenderedFeatures(e.point, { layers: ['camera-clusters'] });
+        const clusterId = features[0].properties.cluster_id;
+        map.current.getSource('cameras').getClusterExpansionZoom(clusterId, (err, zoom) => {
+          if (err) return;
+          map.current.easeTo({ center: features[0].geometry.coordinates, zoom: zoom + 1, duration: 400 });
+        });
+      });
+
+      // Click individual camera → popup with details
+      map.current.on('click', 'camera-unclustered', (e) => {
+        markerClickedRef.current = true;
+        const props = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+        new mapboxgl.Popup({ offset: 10 })
+          .setLngLat(coords)
+          .setHTML(`
+            <div style="font-size:12px;line-height:1.7;min-width:160px;">
+              <strong style="font-size:13px;">Surveillance Camera</strong><br/>
+              ${props.name ? `<span style="color:#555;">Name:</span> ${props.name}<br/>` : ''}
+              ${props['surveillance:type'] ? `<span style="color:#555;">Type:</span> ${props['surveillance:type']}<br/>` : ''}
+              ${props.operator ? `<span style="color:#555;">Operator:</span> ${props.operator}<br/>` : ''}
+              <span style="color:#aaa;font-size:11px;">${parseFloat(props._lat).toFixed(5)}, ${parseFloat(props._lon).toFixed(5)}</span>
+            </div>
+          `)
+          .addTo(map.current);
+      });
+
+      map.current.on('mouseenter', 'camera-clusters', () => { map.current.getCanvas().style.cursor = 'pointer'; });
+      map.current.on('mouseleave', 'camera-clusters', () => { map.current.getCanvas().style.cursor = ''; });
+      map.current.on('mouseenter', 'camera-unclustered', () => { map.current.getCanvas().style.cursor = 'pointer'; });
+      map.current.on('mouseleave', 'camera-unclustered', () => { map.current.getCanvas().style.cursor = ''; });
+
+      // Load cameras for the visible viewport on load and after every pan/zoom
+      const loadViewportCameras = async () => {
+        if (analysisActiveRef.current) return; // analysis results take priority
+        const zoom = map.current.getZoom();
+        if (zoom < 11) return; // skip at city-level zoom — clusters would be meaningless
+        const bounds = map.current.getBounds();
+        const url = `/api/cameras?south=${bounds.getSouth()}&west=${bounds.getWest()}&north=${bounds.getNorth()}&east=${bounds.getEast()}`;
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const { cameras: fetched } = await res.json();
+          if (map.current.getSource('cameras')) {
+            map.current.getSource('cameras').setData(camerasToGeoJSON(fetched));
+          }
+        } catch { /* silently ignore viewport fetch errors */ }
+      };
+
+      map.current.on('moveend', loadViewportCameras);
+      loadViewportCameras();
+
+      // ── Route interactions ─────────────────────────────────────────────────
       map.current.on('click', 'route-line', (e) => {
         e.preventDefault();
         markerClickedRef.current = true;
@@ -104,7 +236,7 @@ export default function MapView() {
           const dist = Math.sqrt((cx - x1 - t * dx) ** 2 + (cy - y1 - t * dy) ** 2);
           if (dist < closestDist) { closestDist = dist; closestSegment = i; }
         }
-        insertPoint(coord, closestSegment + 1);
+        insertPointRef.current?.(coord, closestSegment + 1);
       });
 
       map.current.on('mouseenter', 'route-line', () => { map.current.getCanvas().style.cursor = 'crosshair'; });
@@ -112,7 +244,7 @@ export default function MapView() {
 
       map.current.on('click', (e) => {
         if (markerClickedRef.current) { markerClickedRef.current = false; return; }
-        addPoint([e.lngLat.lng, e.lngLat.lat]);
+        addPointRef.current?.([e.lngLat.lng, e.lngLat.lat]);
       });
     });
 
@@ -134,11 +266,16 @@ export default function MapView() {
   }, []);
 
   const updateRoute = (coords) => {
-    if (!map.current.getSource('route')) return;
+    if (!map.current?.getSource('route')) return;
     map.current.getSource('route').setData({
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: coords }
     });
+  };
+
+  const updateCameraLayer = (cams) => {
+    if (!map.current?.getSource('cameras')) return;
+    map.current.getSource('cameras').setData(camerasToGeoJSON(cams));
   };
 
   const setActiveEndpoint = (id) => {
@@ -181,13 +318,9 @@ export default function MapView() {
   const createMarkerElement = () => {
     const el = document.createElement('div');
     el.style.cssText = `
-      width: 16px;
-      height: 16px;
-      background: #E63946;
-      border: 2.5px solid white;
-      border-radius: 50%;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-      cursor: grab;
+      width: 16px; height: 16px; background: #E63946;
+      border: 2.5px solid white; border-radius: 50%;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: grab;
     `;
     return el;
   };
@@ -239,7 +372,6 @@ export default function MapView() {
       pointsRef.current[index] = [lngLat.lng, lngLat.lat];
       updateRoute([...pointsRef.current]);
     });
-
     marker.on('dragend', () => {
       const index = markersRef.current.findIndex(m => m._id === id);
       if (index === -1) return;
@@ -286,7 +418,7 @@ export default function MapView() {
     return { marker, id };
   };
 
-  const insertPoint = (coord, insertIndex) => {
+  function insertPoint(coord, insertIndex) {
     const { marker, id } = createMarker(coord);
     markersRef.current.splice(insertIndex, 0, marker);
     pointsRef.current.splice(insertIndex, 0, coord);
@@ -295,8 +427,9 @@ export default function MapView() {
     setActiveEndpoint(id);
     markersRef.current.forEach(m => m._refreshPopup?.());
   };
+  }
 
-  const addPoint = (coord) => {
+  function addPoint(coord) {
     const { marker, id } = createMarker(coord);
 
     // Prepend mode — insert before index 0
@@ -333,12 +466,11 @@ export default function MapView() {
     setActiveEndpoint(id);
     markersRef.current.forEach(m => m._refreshPopup?.());
   };
+  }
 
   const clearRoute = () => {
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
-    cameraMarkersRef.current.forEach(m => m.remove());
-    cameraMarkersRef.current = [];
     pointsRef.current = [];
     prependModeRef.current = false;
     setPoints([]);
@@ -346,6 +478,20 @@ export default function MapView() {
     setActiveEndpoint(null);
     clearCamerasFromStorage();
     updateRoute([]);
+    analysisActiveRef.current = false;
+    // Reload viewport cameras now that analysis is cleared
+    if (map.current) {
+      const bounds = map.current.getBounds();
+      const zoom = map.current.getZoom();
+      if (zoom >= 14) {
+        fetch(`/api/cameras?south=${bounds.getSouth()}&west=${bounds.getWest()}&north=${bounds.getNorth()}&east=${bounds.getEast()}`)
+          .then(r => r.json())
+          .then(({ cameras: fetched }) => updateCameraLayer(fetched))
+          .catch(() => {});
+      } else {
+        updateCameraLayer([]);
+      }
+    }
   };
 
   const analyzeRoute = async () => {
@@ -396,12 +542,33 @@ export default function MapView() {
       }
 
       setCameras(allCameras);
+      const WATCH_RADIUS_M = 50;
+      const nearby = allCameras.filter(cam =>
+        isCameraNearPath(cam.lat, cam.lon, coords, WATCH_RADIUS_M)
+      );
+
+      // Persist to localStorage (merge by ID)
+      const existing = JSON.parse(localStorage.getItem('surveillance_cameras') || '[]');
+      const byId = new globalThis.Map(existing.map(c => [c.id, c]));
+      for (const c of nearby) byId.set(c.id, { ...c, queriedAt: new Date().toISOString() });
+      localStorage.setItem('surveillance_cameras', JSON.stringify([...byId.values()]));
+
+      analysisActiveRef.current = true;
+      updateCameraLayer(nearby);
+      setCameras(nearby);
     } catch (err) {
       console.error('Route analysis failed:', err);
     } finally {
       setAnalyzing(false);
     }
   };
+
+  // Sync refs after every render so the map's one-time event listeners
+  // always call the current function instance.
+  useLayoutEffect(() => {
+    addPointRef.current = addPoint;
+    insertPointRef.current = insertPoint;
+  });
 
   const handleSearch = async (value) => {
     setSearch(value);
@@ -428,19 +595,11 @@ export default function MapView() {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          position: 'absolute',
-          top: 0, left: 0, right: 0,
-          background: 'white',
-          opacity: 1,
-          padding: '12px 20px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          zIndex: 10,
-          gap: 16,
-          borderBottom: '1px solid #e0e0e0',
-          color: '#111'
+          position: 'absolute', top: 0, left: 0, right: 0,
+          background: 'white', padding: '12px 20px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.2)', zIndex: 10,
+          gap: 16, borderBottom: '1px solid #e0e0e0', color: '#111'
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
