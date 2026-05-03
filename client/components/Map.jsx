@@ -60,6 +60,7 @@ export default function MapView() {
   const [search, setSearch] = useState('');
   const [suggestions, setSuggestions] = useState([]);
 
+
   useEffect(() => {
     if (map.current) return;
 
@@ -77,7 +78,7 @@ export default function MapView() {
       fitBoundsOptions: { maxZoom: 15 }
     });
     
-    map.current.addControl(geolocate);
+    map.current.addControl(geolocate, 'bottom-left');
 
     map.current.doubleClickZoom.disable();
 
@@ -112,6 +113,22 @@ export default function MapView() {
         addPoint([e.lngLat.lng, e.lngLat.lat]);
       });
     });
+
+  // // Add CSS to ensure geolocate button is visible
+  // const style = document.createElement('style');
+  // style.textContent = `
+  //   .mapboxgl-ctrl-group {
+  //     z-index: 20 !important;
+  //   }
+  //   .mapboxgl-ctrl-geolocate {
+  //     z-index: 20 !important;
+  //   }
+  // `;
+  // document.head.appendChild(style);
+  
+  // return () => style.remove();
+
+  
   }, []);
 
   const updateRoute = (coords) => {
@@ -371,6 +388,9 @@ export default function MapView() {
               background: '#f5f5f5'
             }}
           />
+
+          
+        
           {suggestions.length > 0 && (
             <div style={{
               position: 'absolute',
