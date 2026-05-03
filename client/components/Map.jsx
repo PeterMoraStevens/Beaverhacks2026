@@ -1283,53 +1283,100 @@ export default function MapView() {
               <MiniRouteMap coords={routeCoords} analysisData={analysisData} />
             </div>
 
-            {/* Cell 2: Score Panel (Top Right) */}
+           {/* Cell 2: Score Panel (Top Right) */}
+          <div
+            style={{
+              background: "rgba(0,0,0,0.35)",
+              backdropFilter: "blur(12px)",
+              borderRadius: 16,
+              padding: "20px",
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "24px",
+            }}
+          >
+            {/* Block 1 - Safety Score */}
             <div
               style={{
-                background: "rgba(0,0,0,0.35)",
-                backdropFilter: "blur(12px)",
-                borderRadius: 16,
-                padding: "20px",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "center",
+                background: "rgba(0,0,0,0.55)",
+                backdropFilter: "blur(8px)",
+                borderRadius: 20,
+                padding: "12px 24px",
+                flex: 1,
+                height: "100%",
               }}
             >
               <div
                 style={{
-                  display: "inline-block",
-                  background: "rgba(0,0,0,0.55)",
-                  backdropFilter: "blur(8px)",
-                  borderRadius: 20,
-                  padding: "12px 32px",
+                  fontSize: 64,
+                  fontWeight: 900,
+                  lineHeight: 1,
+                  color: scoreColor,
+                  letterSpacing: "-4px",
                 }}
               >
-                <div
-                  style={{
-                    fontSize: 80,
-                    fontWeight: 900,
-                    lineHeight: 1,
-                    color: scoreColor,
-                    letterSpacing: "-4px",
-                  }}
-                >
-                  {analysisData.score}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: scoreColor,
-                    textTransform: "uppercase",
-                    letterSpacing: 3,
-                    marginTop: 2,
-                  }}
-                >
-                  {scoreLabel}
-                </div>
+                {analysisData.score}
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: scoreColor,
+                  textTransform: "uppercase",
+                  letterSpacing: 2,
+                  marginTop: 6,
+                  alignItems: "center",
+                }}
+              >
+                Safety Score
               </div>
             </div>
+
+            {/* Block 2 - Camera Count */}
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                background: "rgba(0,0,0,0.55)",
+                backdropFilter: "blur(8px)",
+                borderRadius: 20,
+                padding: "12px 24px",
+                flex: 1,
+                height: "100%",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 64,
+                  fontWeight: 900,
+                  lineHeight: 1,
+                  color: scoreColor,
+                  letterSpacing: "-4px",
+                }}
+              >
+                {analysisData.totalCameras}
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: scoreColor,
+                  textTransform: "uppercase",
+                  letterSpacing: 2,
+                  marginTop: 6,
+                  alignItems: "center",
+                }}
+              >
+                Total Cameras
+              </div>
+            </div>
+          </div>
 
             {/* Cell 3: Camera Stats & Graph (Bottom Left) */}
             <div
@@ -1353,7 +1400,6 @@ export default function MapView() {
                 }}
               >
                 {[
-                  { value: analysisData.totalCameras, label: "Total Cameras" },
                   { value: `${analysisData.routeMiles}`, label: "Total Miles" },
                   { value: analysisData.worstCount, label: "Worst Block", color: "#E63946" },
                 ].map(({ value, label, color }) => (
