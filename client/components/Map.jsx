@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { clearCamerasFromStorage } from '@/lib/cameras';
+import { fetchCamerasNearPoint } from '@/lib/geoanalysis';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import * as turf from '@turf/turf';
 
@@ -47,6 +48,17 @@ function intensityToColor(normalized) {
   return '#E63946';
 }
 
+function camerasToGeoJSON(cameras) {
+  return {
+    type: 'FeatureCollection',
+    features: cameras.map(cam => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [cam.lon, cam.lat] },
+      properties: { ...cam.tags, _id: cam.id, _lat: cam.lat, _lon: cam.lon }
+    }))
+  };
+}
+
 function computeRouteAnalysis(coords, cameras) {
   const THRESHOLD = 50;
   const segLengths = coords.slice(0, -1).map((p1, i) => segmentLengthMeters(p1, coords[i + 1]));
@@ -82,10 +94,8 @@ function computeRouteAnalysis(coords, cameras) {
   return { gradientStops, graphData, score, totalCameras, worstCount, worstIdx, routeMiles: routeMiles.toFixed(2), segCameraCounts, maxCount };
 }
 
-// Mini route map drawn on canvas — colored by surveillance intensity
 function MiniRouteMap({ coords, analysisData }) {
   const canvasRef = useRef(null);
-
   useEffect(() => {
     if (!canvasRef.current || !coords || coords.length < 2) return;
     const canvas = canvasRef.current;
@@ -94,25 +104,19 @@ function MiniRouteMap({ coords, analysisData }) {
     const H = canvas.offsetHeight || 120;
     canvas.width = W;
     canvas.height = H;
-
     ctx.clearRect(0, 0, W, H);
-
     const lngs = coords.map(c => c[0]);
     const lats = coords.map(c => c[1]);
     const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
     const pad = 20;
-
     const toX = (lng) => pad + ((lng - minLng) / (maxLng - minLng || 1)) * (W - pad * 2);
     const toY = (lat) => H - pad - ((lat - minLat) / (maxLat - minLat || 1)) * (H - pad * 2);
-
     const counts = analysisData.segCameraCounts || analysisData.graphData.map(d => d.cameras);
     const maxCount = analysisData.maxCount || Math.max(...counts, 1);
-
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = 3.5;
-
     for (let i = 0; i < coords.length - 1; i++) {
       const normalized = (counts[i] || 0) / maxCount;
       ctx.strokeStyle = intensityToColor(normalized);
@@ -121,29 +125,20 @@ function MiniRouteMap({ coords, analysisData }) {
       ctx.lineTo(toX(coords[i + 1][0]), toY(coords[i + 1][1]));
       ctx.stroke();
     }
-
-    // Start dot — white
     ctx.fillStyle = 'white';
     ctx.shadowColor = 'rgba(0,0,0,0.4)';
     ctx.shadowBlur = 4;
     ctx.beginPath();
     ctx.arc(toX(coords[0][0]), toY(coords[0][1]), 5, 0, Math.PI * 2);
     ctx.fill();
-
-    // End dot — red
     ctx.fillStyle = '#E63946';
     ctx.beginPath();
     ctx.arc(toX(coords[coords.length - 1][0]), toY(coords[coords.length - 1][1]), 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
-
   }, [coords, analysisData]);
-
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: '100%', height: '120px', borderRadius: 12, background: 'rgba(255,255,255,0.07)', display: 'block' }}
-    />
+    <canvas ref={canvasRef} style={{ width: '100%', height: '120px', borderRadius: 12, background: 'rgba(0,0,0,0.4)', display: 'block' }} />
   );
 }
 
@@ -156,11 +151,13 @@ export default function MapView() {
   const markerClickedRef = useRef(false);
   const activeEndpointRef = useRef(null);
   const prependModeRef = useRef(false);
+  const analysisActiveRef = useRef(false);
   const [points, setPoints] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [animating, setAnimating] = useState(false);
   const [search, setSearch] = useState('');
+  const [currentLocation, setCurrentLocation] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [activeEndpointId, setActiveEndpointId] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
@@ -188,10 +185,16 @@ export default function MapView() {
       trackUserLocation: true,
       fitBoundsOptions: { maxZoom: 15 }
     });
+    geolocate.on('geolocate', (e) => {
+      setCurrentLocation([e.coords.longitude, e.coords.latitude]);
+    });
     map.current.addControl(geolocate);
     map.current.doubleClickZoom.disable();
+
     map.current.on('load', () => {
       geolocate.trigger();
+
+      // Route source + layer
       map.current.addSource('route', {
         type: 'geojson',
         lineMetrics: true,
@@ -208,6 +211,119 @@ export default function MapView() {
           'line-opacity': 0.95
         }
       });
+
+      // Camera cluster source
+      map.current.addSource('cameras', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        cluster: true,
+        clusterMaxZoom: 15,
+        clusterRadius: 50
+      });
+
+      // Cluster bubbles
+      map.current.addLayer({
+        id: 'camera-clusters',
+        type: 'circle',
+        source: 'cameras',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-color': [
+            'step', ['get', 'point_count'],
+            '#FFB703', 10, '#FB8500', 50, '#E63946'
+          ],
+          'circle-radius': [
+            'step', ['get', 'point_count'],
+            18, 10, 24, 50, 32
+          ],
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#fff',
+          'circle-opacity': 0.92
+        }
+      });
+
+      // Cluster count labels
+      map.current.addLayer({
+        id: 'camera-cluster-count',
+        type: 'symbol',
+        source: 'cameras',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
+          'text-size': 13
+        },
+        paint: { 'text-color': '#fff' }
+      });
+
+      // Individual camera dots
+      map.current.addLayer({
+        id: 'camera-unclustered',
+        type: 'circle',
+        source: 'cameras',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-color': '#FFB703',
+          'circle-radius': 7,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#c47c00',
+          'circle-opacity': 0.95
+        }
+      });
+
+      // Click cluster → zoom in
+      map.current.on('click', 'camera-clusters', (e) => {
+        markerClickedRef.current = true;
+        const features = map.current.queryRenderedFeatures(e.point, { layers: ['camera-clusters'] });
+        const clusterId = features[0].properties.cluster_id;
+        map.current.getSource('cameras').getClusterExpansionZoom(clusterId, (err, zoom) => {
+          if (err) return;
+          map.current.easeTo({ center: features[0].geometry.coordinates, zoom: zoom + 1, duration: 400 });
+        });
+      });
+
+      // Click individual camera → popup
+      map.current.on('click', 'camera-unclustered', (e) => {
+        markerClickedRef.current = true;
+        const props = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+        new mapboxgl.Popup({ offset: 10 })
+          .setLngLat(coords)
+          .setHTML(`
+            <div style="font-size:12px;line-height:1.7;min-width:160px;">
+              <strong style="font-size:13px;">Surveillance Camera</strong><br/>
+              ${props.name ? `<span style="color:#555;">Name:</span> ${props.name}<br/>` : ''}
+              ${props['surveillance:type'] ? `<span style="color:#555;">Type:</span> ${props['surveillance:type']}<br/>` : ''}
+              ${props.operator ? `<span style="color:#555;">Operator:</span> ${props.operator}<br/>` : ''}
+              <span style="color:#aaa;font-size:11px;">${parseFloat(props._lat).toFixed(5)}, ${parseFloat(props._lon).toFixed(5)}</span>
+            </div>
+          `)
+          .addTo(map.current);
+      });
+
+      map.current.on('mouseenter', 'camera-clusters', () => { map.current.getCanvas().style.cursor = 'pointer'; });
+      map.current.on('mouseleave', 'camera-clusters', () => { map.current.getCanvas().style.cursor = ''; });
+      map.current.on('mouseenter', 'camera-unclustered', () => { map.current.getCanvas().style.cursor = 'pointer'; });
+      map.current.on('mouseleave', 'camera-unclustered', () => { map.current.getCanvas().style.cursor = ''; });
+
+      // Load viewport cameras on pan/zoom
+      const loadViewportCameras = async () => {
+        if (analysisActiveRef.current) return;
+        if (map.current.getZoom() < 14) return;
+        const bounds = map.current.getBounds();
+        try {
+          const res = await fetch(`/api/cameras?south=${bounds.getSouth()}&west=${bounds.getWest()}&north=${bounds.getNorth()}&east=${bounds.getEast()}`);
+          if (!res.ok) return;
+          const { cameras: fetched } = await res.json();
+          if (map.current.getSource('cameras')) {
+            map.current.getSource('cameras').setData(camerasToGeoJSON(fetched));
+          }
+        } catch { /* ignore */ }
+      };
+      map.current.on('moveend', loadViewportCameras);
+      loadViewportCameras();
+
+      // Route interactions
       map.current.on('click', 'route-line', (e) => {
         e.preventDefault();
         markerClickedRef.current = true;
@@ -233,13 +349,17 @@ export default function MapView() {
     });
   }, []);
 
+  const updateCameraLayer = (cams) => {
+    if (!map.current?.getSource('cameras')) return;
+    map.current.getSource('cameras').setData(camerasToGeoJSON(cams));
+  };
+
   const animateRouteDraw = (coords, gradientStops, onComplete) => {
     setAnimating(true);
     const line = turf.lineString(coords);
     const totalLengthKm = turf.length(line, { units: 'kilometers' });
     const DURATION = 1800;
     const start = performance.now();
-
     map.current.getSource('route').setData({
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: [coords[0], coords[0]] }
@@ -247,7 +367,6 @@ export default function MapView() {
     map.current.setPaintProperty('route-line', 'line-gradient', [
       'interpolate', ['linear'], ['line-progress'], 0, '#E63946', 1, '#E63946'
     ]);
-
     const frame = (now) => {
       const elapsed = now - start;
       const t = Math.min(elapsed / DURATION, 1);
@@ -445,6 +564,7 @@ export default function MapView() {
     cameraMarkersRef.current = [];
     pointsRef.current = [];
     prependModeRef.current = false;
+    analysisActiveRef.current = false;
     setPoints([]);
     setCameras([]);
     setActiveEndpoint(null);
@@ -454,6 +574,21 @@ export default function MapView() {
     clearCamerasFromStorage();
     updateRoute([]);
     resetRouteColor();
+    updateCameraLayer([]);
+  };
+
+  const analyzeLocation = async () => {
+    if (analyzing || !currentLocation) return;
+    setAnalyzing(true);
+    try {
+      const cams = await fetchCamerasNearPoint(currentLocation[0], currentLocation[1]);
+      updateCameraLayer(cams);
+      setCameras(cams);
+    } catch (err) {
+      console.error('Location analysis failed:', err);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const analyzeRoute = async () => {
@@ -461,7 +596,6 @@ export default function MapView() {
     setAnalyzing(true);
     cameraMarkersRef.current.forEach(m => m.remove());
     cameraMarkersRef.current = [];
-
     const coords = pointsRef.current;
     const lons = coords.map(p => p[0]), lats = coords.map(p => p[1]);
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
@@ -472,57 +606,42 @@ export default function MapView() {
     const north = maxLat + metersToDegLat(PAD_M);
     const west  = minLon - metersToDegLon(PAD_M, midLat);
     const east  = maxLon + metersToDegLon(PAD_M, midLat);
-
     try {
       const res = await fetch(`/api/cameras?south=${south}&west=${west}&north=${north}&east=${east}`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const { cameras: allCameras } = await res.json();
-
       const WATCH_RADIUS_M = 50;
       const nearby = allCameras.filter(cam => isCameraNearPath(cam.lat, cam.lon, coords, WATCH_RADIUS_M));
-
       const existing = JSON.parse(localStorage.getItem('surveillance_cameras') || '[]');
       const byId = new globalThis.Map(existing.map(c => [c.id, c]));
       for (const c of nearby) byId.set(c.id, { ...c, queriedAt: new Date().toISOString() });
       localStorage.setItem('surveillance_cameras', JSON.stringify([...byId.values()]));
-
       const analysis = computeRouteAnalysis(coords, nearby);
-
-      for (const cam of nearby) {
-        const el = document.createElement('div');
-        el.style.cssText = `width:22px;height:22px;background:#FFB703;border:2px solid #c47c00;border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer;`;
-        el.innerHTML = '📷';
-        const popup = new mapboxgl.Popup({ offset: 14, closeButton: false })
-          .setHTML(`<div style="font-size:12px;line-height:1.6;"><strong>Surveillance Camera</strong><br/>${cam.tags?.name ? `Name: ${cam.tags.name}<br/>` : ''}${cam.tags?.['surveillance:type'] ? `Type: ${cam.tags['surveillance:type']}<br/>` : ''}${cam.tags?.operator ? `Operator: ${cam.tags.operator}<br/>` : ''}<span style="color:#888;">${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}</span></div>`);
-        const marker = new mapboxgl.Marker({ element: el }).setLngLat([cam.lon, cam.lat]).setPopup(popup).addTo(map.current);
-        cameraMarkersRef.current.push(marker);
-      }
-
+      analysisActiveRef.current = true;
+      updateCameraLayer(nearby);
       setCameras(nearby);
       setAnalysisData(analysis);
       setAnalyzing(false);
-
       animateRouteDraw(coords, analysis.gradientStops, () => {
         setTimeout(() => setShowResults(true), 200);
       });
-
     } catch (err) {
       console.error('Route analysis failed:', err);
       setAnalyzing(false);
     }
   };
 
-    const handleSearch = async (value) => {
+  const handleSearch = async (value) => {
     setSearch(value);
-    if (showResults) setShowResults(false); // ← add this
-    if (analysisData) setAnalysisData(null); // ← add this
+    if (showResults) setShowResults(false);
+    if (analysisData) setAnalysisData(null);
     if (value.length < 2) { setSuggestions([]); return; }
     const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(value)}.json?types=place&country=us&access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`);
     const data = await res.json();
     setSuggestions(data.features || []);
-    };
+  };
 
-    const selectCity = (feature) => {
+  const selectCity = (feature) => {
     setShowResults(false);
     setAnalysisData(null);
     const [lng, lat] = feature.center;
@@ -530,7 +649,7 @@ export default function MapView() {
     setSearch(feature.place_name);
     setSuggestions([]);
     clearRoute();
-    };  
+  };
 
   const scoreColor = !analysisData ? '#fff'
     : analysisData.score < 30 ? '#00C853'
@@ -598,89 +717,86 @@ export default function MapView() {
         </span>
       </div>
 
-      {/* Results — floating over map, no box */}
+      {/* Results — floating over map */}
       {showResults && analysisData && (
         <div onClick={(e) => e.stopPropagation()} style={{
           position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: panelVisible
-            ? 'translate(-50%, -50%) scale(1)'
-            : 'translate(-50%, -50%) scale(0.9)',
+          top: '50%', left: '50%',
+          transform: panelVisible ? 'translate(-50%, -50%) scale(1)' : 'translate(-50%, -50%) scale(0.9)',
           opacity: panelVisible ? 1 : 0,
           transition: 'all 0.4s cubic-bezier(0.32, 0.72, 0, 1)',
-          zIndex: 9,
-          width: '90%',
-          maxWidth: 420,
-          textAlign: 'center',
+          zIndex: 9, width: '90%', maxWidth: 420, textAlign: 'center',
         }}>
-          {/* Close button */}
           <button onClick={() => setShowResults(false)} style={{
             position: 'absolute', top: -8, right: 0,
             width: 30, height: 30, borderRadius: '50%',
             border: '1px solid rgba(255,255,255,0.25)',
-            background: 'rgba(0,0,0,0.45)',
-            backdropFilter: 'blur(4px)',
+            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
             cursor: 'pointer', fontSize: 18,
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'center', color: 'white'
+            display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white'
           }}>×</button>
 
-          {/* Mini route preview */}
-          <div style={{ marginBottom: 20 }}>
+          <div style={{ marginBottom: 16 }}>
             <MiniRouteMap coords={pointsRef.current} analysisData={analysisData} />
           </div>
 
-          {/* Big score */}
-          <div style={{ fontSize: 88, fontWeight: 900, lineHeight: 1, color: scoreColor, letterSpacing: '-4px', textShadow: '0 2px 24px rgba(0,0,0,0.6)' }}>
-            {analysisData.score}
-          </div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: scoreColor, textTransform: 'uppercase', letterSpacing: 3, marginBottom: 28, textShadow: '0 1px 8px rgba(0,0,0,0.5)' }}>
-            {scoreLabel}
-          </div>
-
-          {/* Stats row */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 36, marginBottom: 24 }}>
-            {[
-              { value: analysisData.totalCameras, label: 'Cameras' },
-              { value: `${analysisData.routeMiles}`, label: 'Miles' },
-              { value: analysisData.worstCount, label: 'Worst Block', color: '#E63946' },
-            ].map(({ value, label, color }) => (
-              <div key={label} style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 30, fontWeight: 900, color: color || 'white', letterSpacing: '-1px', textShadow: '0 2px 12px rgba(0,0,0,0.5)' }}>{value}</div>
-                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 2 }}>{label}</div>
-              </div>
-            ))}
+          <div style={{
+            display: 'inline-block',
+            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)',
+            borderRadius: 20, padding: '12px 32px', marginBottom: 10,
+          }}>
+            <div style={{ fontSize: 80, fontWeight: 900, lineHeight: 1, color: scoreColor, letterSpacing: '-4px' }}>
+              {analysisData.score}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: scoreColor, textTransform: 'uppercase', letterSpacing: 3, marginTop: 2 }}>
+              {scoreLabel}
+            </div>
           </div>
 
-          {/* Exposure graph */}
-          <ResponsiveContainer width="100%" height={70}>
-            <AreaChart data={analysisData.graphData} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
-                  <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="distanceMi" tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.4)' }} tickLine={false} axisLine={false} />
-              <YAxis tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.4)' }} tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.8)', color: '#fff' }}
-                formatter={(value) => [`${value} cameras`, 'Exposure']}
-                labelFormatter={(label) => `${label} mi`}
-              />
-              <Area type="monotone" dataKey="cameras" stroke="#E63946" strokeWidth={2}
-                fill="url(#exposureGradient)" isAnimationActive={true} animationDuration={1000} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <div style={{
+            background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(12px)',
+            borderRadius: 16, padding: '16px 20px', marginTop: 8,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 36, marginBottom: 16 }}>
+              {[
+                { value: analysisData.totalCameras, label: 'Cameras' },
+                { value: `${analysisData.routeMiles}`, label: 'Miles' },
+                { value: analysisData.worstCount, label: 'Worst Block', color: '#E63946' },
+              ].map(({ value, label, color }) => (
+                <div key={label} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: color || 'white', letterSpacing: '-1px' }}>{value}</div>
+                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 2 }}>{label}</div>
+                </div>
+              ))}
+            </div>
 
-          {/* Legend */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginTop: 14 }}>
-            {[['#00C853', 'Low'], ['#FFD600', 'Medium'], ['#FF6D00', 'High'], ['#E63946', 'Severe']].map(([color, label]) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>
-                <div style={{ width: 14, height: 3, background: color, borderRadius: 2 }} /> {label}
-              </div>
-            ))}
+            <ResponsiveContainer width="100%" height={70}>
+              <AreaChart data={analysisData.graphData} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="exposureGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#E63946" stopOpacity={0.6} />
+                    <stop offset="95%" stopColor="#E63946" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="distanceMi" tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.5)' }} tickLine={false} axisLine={false} />
+                <YAxis tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.5)' }} tickLine={false} axisLine={false} />
+                <Tooltip
+                  contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.8)', color: '#fff' }}
+                  formatter={(value) => [`${value} cameras`, 'Exposure']}
+                  labelFormatter={(label) => `${label} mi`}
+                />
+                <Area type="monotone" dataKey="cameras" stroke="#E63946" strokeWidth={2}
+                  fill="url(#exposureGradient)" isAnimationActive={true} animationDuration={1000} />
+              </AreaChart>
+            </ResponsiveContainer>
+
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginTop: 10 }}>
+              {[['#00C853', 'Low'], ['#FFD600', 'Medium'], ['#FF6D00', 'High'], ['#E63946', 'Severe']].map(([color, label]) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'rgba(255,255,255,0.6)' }}>
+                  <div style={{ width: 14, height: 3, background: color, borderRadius: 2 }} /> {label}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -708,6 +824,19 @@ export default function MapView() {
               display: 'flex', alignItems: 'center', gap: 6
             }}>
             {analyzing ? 'Fetching…' : animating ? 'Analyzing…' : 'Analyze Route →'}
+          </button>
+
+          <button onClick={(e) => { e.stopPropagation(); analyzeLocation(); }}
+            disabled={!currentLocation || isLoading}
+            style={{
+              background: !currentLocation || isLoading ? '#ccc' : '#E63946',
+              color: 'white', border: 'none', padding: '12px 24px', borderRadius: 10,
+              fontSize: 13, fontWeight: 700,
+              cursor: !currentLocation || isLoading ? 'not-allowed' : 'pointer',
+              boxShadow: currentLocation && !isLoading ? '0 2px 12px rgba(230,57,70,0.4)' : 'none',
+              display: 'flex', alignItems: 'center', gap: 6
+            }}>
+            {analyzing ? 'Analyzing…' : 'Analyze Location →'}
           </button>
         </div>
       )}
