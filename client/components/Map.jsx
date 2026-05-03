@@ -60,7 +60,6 @@ export default function MapView() {
   const [cameras, setCameras] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [search, setSearch] = useState('');
-  const [currentLocation, setCurrentLocation] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [activeEndpointId, setActiveEndpointId] = useState(null);
 
@@ -79,10 +78,6 @@ export default function MapView() {
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,
       fitBoundsOptions: { maxZoom: 15 }
-    });
-
-    geolocate.on('geolocate', (e) => {
-      setCurrentLocation([e.coords.longitude, e.coords.latitude]);
     });
     
     map.current.addControl(geolocate, 'bottom-left');
@@ -499,59 +494,6 @@ export default function MapView() {
     }
   };
 
-  const renderCameraMarkers = (camerasMap) => {
-  // Remove existing markers first
-  cameraMarkersRef.current.forEach(m => m.remove());
-  cameraMarkersRef.current = [];
-
-  // Render new markers
-  for (const [id, cameraData] of camerasMap) {
-    const el = document.createElement('div');
-    el.style.cssText = `
-      width: 22px; height: 22px; background: #FFB703;
-      border: 2px solid #c47c00; border-radius: 5px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; cursor: pointer;
-    `;
-    el.innerHTML = '📷';
-
-    const popup = new mapboxgl.Popup({ offset: 14, closeButton: false })
-      .setHTML(`
-        <div style="font-size:12px;line-height:1.6;">
-          <strong>Surveillance Camera</strong><br/>
-          ${cameraData.tags?.name ? `Name: ${cameraData.tags.name}<br/>` : ''}
-          ${cameraData.tags?.['surveillance:type'] ? `Type: ${cameraData.tags['surveillance:type']}<br/>` : ''}
-          ${cameraData.tags?.operator ? `Operator: ${cameraData.tags.operator}<br/>` : ''}
-          <span style="color:#888;">${cameraData.lat.toFixed(6)}, ${cameraData.lon.toFixed(6)}</span>
-        </div>
-      `);
-
-    const marker = new mapboxgl.Marker({ element: el })
-      .setLngLat([cameraData.lon, cameraData.lat])
-      .setPopup(popup)
-      .addTo(map.current);
-
-    cameraMarkersRef.current.push(marker);
-  }
-};
-
-  const analyzeLocation = async () => {
-    if (analyzing || currentLocation == null) return;
-    setAnalyzing(true);
-    const allCameras = new globalThis.Map();
-
-    try {
-      const cameras = await fetchCamerasNearPoint(currentLocation[0], currentLocation[1]); //Cameras[]
-      for (const cam of cameras) allCameras.set(cam.id, { ...cam, queriedAt: new Date().toISOString() });
-      renderCameraMarkers(allCameras);
-      setCameras(allCameras);
-    } catch (err) {
-      console.error('Location analysis failed:', err);
-    } finally {
-      setAnalyzing(false);
-    }
-  };
   const analyzeRoute = async () => {
     if (pointsRef.current.length < 2 || analyzing) return;
     setAnalyzing(true);
@@ -569,36 +511,36 @@ export default function MapView() {
       }
 
       // Render camera markers
-      // for (const [id, cameraData] of allCameras) {
-      //   const el = document.createElement('div');
-      //   el.style.cssText = `
-      //     width: 22px; height: 22px; background: #FFB703;
-      //     border: 2px solid #c47c00; border-radius: 5px;
-      //     box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-      //     display: flex; align-items: center; justify-content: center;
-      //     font-size: 13px; cursor: pointer;
-      //   `;
-      //   el.innerHTML = '📷';
+      for (const [id, cameraData] of allCameras) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width: 22px; height: 22px; background: #FFB703;
+          border: 2px solid #c47c00; border-radius: 5px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+          display: flex; align-items: center; justify-content: center;
+          font-size: 13px; cursor: pointer;
+        `;
+        el.innerHTML = '📷';
 
-      //   const popup = new mapboxgl.Popup({ offset: 14, closeButton: false })
-      //     .setHTML(`
-      //       <div style="font-size:12px;line-height:1.6;">
-      //         <strong>Surveillance Camera</strong><br/>
-      //         ${cameraData.tags?.name ? `Name: ${cameraData.tags.name}<br/>` : ''}
-      //         ${cameraData.tags?.['surveillance:type'] ? `Type: ${cameraData.tags['surveillance:type']}<br/>` : ''}
-      //         ${cameraData.tags?.operator ? `Operator: ${cameraData.tags.operator}<br/>` : ''}
-      //         <span style="color:#888;">${cameraData.lat.toFixed(6)}, ${cameraData.lon.toFixed(6)}</span>
-      //       </div>
-      //     `);
+        const popup = new mapboxgl.Popup({ offset: 14, closeButton: false })
+          .setHTML(`
+            <div style="font-size:12px;line-height:1.6;">
+              <strong>Surveillance Camera</strong><br/>
+              ${cameraData.tags?.name ? `Name: ${cameraData.tags.name}<br/>` : ''}
+              ${cameraData.tags?.['surveillance:type'] ? `Type: ${cameraData.tags['surveillance:type']}<br/>` : ''}
+              ${cameraData.tags?.operator ? `Operator: ${cameraData.tags.operator}<br/>` : ''}
+              <span style="color:#888;">${cameraData.lat.toFixed(6)}, ${cameraData.lon.toFixed(6)}</span>
+            </div>
+          `);
 
-      //   const marker = new mapboxgl.Marker({ element: el })
-      //     .setLngLat([cameraData.lon, cameraData.lat])
-      //     .setPopup(popup)
-      //     .addTo(map.current);
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat([cameraData.lon, cameraData.lat])
+          .setPopup(popup)
+          .addTo(map.current);
 
-      //   cameraMarkersRef.current.push(marker);
-      // }
-      renderCameraMarkers(allCameras);
+        cameraMarkersRef.current.push(marker);
+      }
+
       setCameras(allCameras);
       const WATCH_RADIUS_M = 50;
       const nearby = allCameras.filter(cam =>
@@ -753,20 +695,6 @@ export default function MapView() {
             display: 'flex', alignItems: 'center', gap: 6
           }}>
           {analyzing ? 'Analyzing…' : 'Analyze Route →'}
-        </button>
-
-        <button
-          onClick={(e) => { e.stopPropagation(); analyzeLocation(); }}
-          disabled={ analyzing }
-          style={{
-            background: currentLocation == null || analyzing ? '#ccc' : '#E63946',
-            color: 'white', border: 'none', padding: '12px 24px', borderRadius: 10,
-            fontSize: 13, fontWeight: 700,
-            cursor: currentLocation == null || analyzing ? 'not-allowed' : 'pointer',
-            boxShadow: currentLocation != null && !analyzing ? '0 2px 12px rgba(230,57,70,0.4)' : 'none',
-            display: 'flex', alignItems: 'center', gap: 6
-          }}>
-          {analyzing ? 'Analyzing…' : 'Analyze Current Location →'}
         </button>
       </div>
     </div>
